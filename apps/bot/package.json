@@ -1,0 +1,28 @@
+{
+  "name": "@hu-asms/bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@grammyjs/conversations": "^1.2.0",
+    "@hu-asms/database": "*",
+    "@hu-asms/shared": "*",
+    "@hu-asms/types": "*",
+    "@hu-asms/validation": "*",
+    "@supabase/supabase-js": "^2.42.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5"
+  }
+}
