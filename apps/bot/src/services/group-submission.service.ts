@@ -10,7 +10,7 @@ import type {
   Submission,
   SubmissionFile,
 } from '@hu-asms/types';
-import { validateSubmissionFile } from '@hu-asms/validation';
+import { validateSubmissionFile, sanitizeFilename } from '@hu-asms/validation';
 import { NotificationService } from './notification.service.js';
 import { BOT_MESSAGES } from '@hu-asms/shared';
 
@@ -247,7 +247,7 @@ export class GroupSubmissionService {
     // -------------------------------------------------------------------------
     // 7. Store document in private Supabase Storage
     // -------------------------------------------------------------------------
-    const sanitizedFilename = input.file.originalFilename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const sanitizedFilename = sanitizeFilename(input.file.originalFilename);
     const storagePath = `projects/${project.id}/groups/${group.id}/v${newVersion}_${sanitizedFilename}`;
 
     if (input.file.buffer) {

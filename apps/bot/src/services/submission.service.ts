@@ -8,7 +8,7 @@ import type {
   Submission,
   SubmissionFile,
 } from '@hu-asms/types';
-import { validateSubmissionFile } from '@hu-asms/validation';
+import { validateSubmissionFile, sanitizeFilename } from '@hu-asms/validation';
 import { NotificationService } from './notification.service.js';
 
 export class SubmissionError extends Error {
@@ -205,7 +205,7 @@ export class IndividualSubmissionService {
     // -------------------------------------------------------------------------
     // 5. Store file securely in private Supabase Storage
     // -------------------------------------------------------------------------
-    const sanitizedFilename = input.file.originalFilename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const sanitizedFilename = sanitizeFilename(input.file.originalFilename);
     const storagePath = `projects/${project.id}/individual/${student.id}/v${newVersion}_${sanitizedFilename}`;
 
     if (input.file.buffer) {

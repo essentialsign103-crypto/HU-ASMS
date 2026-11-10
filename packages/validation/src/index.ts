@@ -130,6 +130,45 @@ export function validateSubmissionFile(options: FileValidationOptions): {
   return { valid: true };
 }
 
+/**
+ * Sanitizes an uploaded filename to prevent directory traversal, control character
+ * injection, and filesystem exploits.
+ */
+export function sanitizeFilename(filename: string): string {
+  if (!filename) return 'unnamed_file';
+
+  // 1. Remove null bytes and non-printable control characters
+  let clean = filename.replace(/[\x00-\x1F\x7F]/g, '');
+
+  // 2. Remove directory paths and traversal components (../, ..\, /)
+  clean = clean.replace(/(\.\.[\/\\])+/g, '');
+  clean = clean.replace(/[/\\]+/g, '_');
+
+  // 3. Remove illegal Windows and POSIX characters: < > : " | ? *
+  clean = clean.replace(/[<>:"|?*]/g, '');
+
+  // 4. Trim leading/trailing dots and spaces
+  clean = clean.trim().replace(/^\.+|\.+$/g, '');
+
+  // 5. Replace multi-spaces or multi-underscores
+  clean = clean.replace(/[\s_]+/g, '_');
+
+  if (!clean || clean.length === 0) {
+    return 'submission_file';
+  }
+
+  // 6. Split extension and base to limit length to 100 chars
+  const parts = clean.split('.');
+  if (parts.length > 1) {
+    const ext = parts.pop()!;
+    const base = parts.join('.');
+    const truncatedBase = base.slice(0, 80);
+    return `${truncatedBase}.${ext}`;
+  }
+
+  return clean.slice(0, 80);
+}
+
 export function validateGroupMembershipCapacity(
   currentMemberCount: number,
   minGroupSize: number,
