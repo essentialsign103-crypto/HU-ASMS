@@ -6,6 +6,7 @@
 import { revalidatePath } from 'next/cache';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
 import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import { assertRateLimit } from '../../../lib/security/rate-limiter';
 import {
   executePrepareDeliveryBatch,
   executeDispatchDelivery,
@@ -24,14 +25,22 @@ export type { PrepareDeliveryInput, DeliveryActionResult, DeliveryManifestResult
 export async function prepareDeliveryBatch(
   input: PrepareDeliveryInput
 ): Promise<DeliveryActionResult> {
-  const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-  const result = await executePrepareDeliveryBatch(supabase, context, input);
-  if (result.success) {
-    revalidatePath('/rep/deliveries');
-    revalidatePath('/rep');
+  try {
+    const supabase = await createServerSupabaseClient();
+    const context = await resolveUserSessionContext(supabase);
+    if (!context || !context.profile) {
+      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      return { success: false, error: 'Authentication required.' };
+    }
+    const result = await executePrepareDeliveryBatch(supabase, context, input);
+    if (result.success) {
+      revalidatePath('/rep/deliveries');
+      revalidatePath('/rep');
+    }
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Rate limit exceeded.' };
   }
-  return result;
 }
 
 /**
@@ -41,14 +50,22 @@ export async function dispatchDelivery(
   deliveryId: string,
   dispatchNotes?: string
 ): Promise<DeliveryActionResult> {
-  const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-  const result = await executeDispatchDelivery(supabase, context, deliveryId, dispatchNotes);
-  if (result.success) {
-    revalidatePath('/rep/deliveries');
-    revalidatePath('/rep');
+  try {
+    const supabase = await createServerSupabaseClient();
+    const context = await resolveUserSessionContext(supabase);
+    if (!context || !context.profile) {
+      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      return { success: false, error: 'Authentication required.' };
+    }
+    const result = await executeDispatchDelivery(supabase, context, deliveryId, dispatchNotes);
+    if (result.success) {
+      revalidatePath('/rep/deliveries');
+      revalidatePath('/rep');
+    }
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Rate limit exceeded.' };
   }
-  return result;
 }
 
 /**
@@ -57,21 +74,37 @@ export async function dispatchDelivery(
 export async function acknowledgeDelivery(
   deliveryId: string
 ): Promise<DeliveryActionResult> {
-  const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-  const result = await executeAcknowledgeDelivery(supabase, context, deliveryId);
-  if (result.success) {
-    revalidatePath('/rep/deliveries');
-    revalidatePath('/rep');
+  try {
+    const supabase = await createServerSupabaseClient();
+    const context = await resolveUserSessionContext(supabase);
+    if (!context || !context.profile) {
+      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      return { success: false, error: 'Authentication required.' };
+    }
+    const result = await executeAcknowledgeDelivery(supabase, context, deliveryId);
+    if (result.success) {
+      revalidatePath('/rep/deliveries');
+      revalidatePath('/rep');
+    }
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Rate limit exceeded.' };
   }
-  return result;
 }
 
 /**
  * Generates temporary 15-minute signed URLs for all submission files in a delivery batch.
  */
 export async function getDeliveryPackageManifest(deliveryId: string): Promise<DeliveryManifestResult> {
-  const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-  return executeGetDeliveryPackageManifest(supabase, context, deliveryId);
+  try {
+    const supabase = await createServerSupabaseClient();
+    const context = await resolveUserSessionContext(supabase);
+    if (!context || !context.profile) {
+      assertRateLimit('rep-delivery-manifest:unauth', 15, 60000, 'delivery manifest generation');
+      return { error: 'Authentication required.' };
+    }
+    return executeGetDeliveryPackageManifest(supabase, context, deliveryId);
+  } catch (err: any) {
+    return { error: err.message || 'Rate limit exceeded.' };
+  }
 }

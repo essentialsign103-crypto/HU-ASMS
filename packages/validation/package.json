@@ -9,6 +9,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "node --version"
   },

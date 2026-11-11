@@ -1,7 +1,13 @@
 // HU-ASMS: Telegram Bot Core Setup (grammY)
 import { Bot, session } from 'grammy';
+import type { UserFromGetMe } from 'grammy/types';
 import { conversations, createConversation } from '@grammyjs/conversations';
 import type { BotContext, SessionData } from './types/context.js';
+import {
+  createRateLimiterMiddleware,
+  type RateLimitOptions,
+} from './middleware/rate-limit.middleware.js';
+import { sanitizeLogData } from './utils/error-handler.js';
 import { registrationConversation } from './conversations/registration.conversation.js';
 import { correctionConversation } from './conversations/correction.conversation.js';
 import { individualSubmissionConversation } from './conversations/submission.conversation.js';
@@ -29,13 +35,30 @@ import {
 import { RepresentativeService } from './services/representative.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
 
-export function createBot(token?: string): Bot<BotContext> {
+export interface CreateBotOptions {
+  rateLimit?: Partial<RateLimitOptions>;
+  botInfo?: UserFromGetMe;
+}
+
+export function createBot(token?: string, options?: CreateBotOptions): Bot<BotContext> {
   const botToken = token || process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
     throw new Error('TELEGRAM_BOT_TOKEN is required to initialize the Telegram bot.');
   }
 
-  const bot = new Bot<BotContext>(botToken);
+  const bot = new Bot<BotContext>(
+    botToken,
+    options?.botInfo ? { botInfo: options.botInfo } : undefined
+  );
+
+  // 0. Rate Limiting Middleware (protects against command flooding and upload abuse)
+  bot.use(
+    createRateLimiterMiddleware({
+      windowMs: 10000,
+      maxRequests: 10,
+      ...options?.rateLimit,
+    })
+  );
 
   // 1. Session Middleware
   bot.use(
@@ -118,10 +141,16 @@ export function createBot(token?: string): Bot<BotContext> {
     await renderProjectReport(ctx, sectionId, projectId);
   });
 
-  // 5. Global Error Boundary
+  // 5. Global Error Boundary (redacted logging to prevent token/secret exposure)
   bot.catch((err) => {
     const ctx = err.ctx;
-    console.error(`Error while handling update ${ctx.update.update_id}:`, err.error);
+    const rawError: any = err.error;
+    const safeError = sanitizeLogData({
+      updateId: ctx?.update?.update_id,
+      message: rawError?.message || String(rawError),
+      code: rawError?.code,
+    });
+    console.error('Error while handling Telegram update:', safeError);
   });
 
   return bot;

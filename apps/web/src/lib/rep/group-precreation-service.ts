@@ -3,6 +3,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { assertRepresentativeSectionScope, type UserSessionContext } from '../auth/roles';
+import { assertRateLimit } from '../security/rate-limiter';
+import { writeScopedAuditLog } from './audit-helper';
 
 export interface CreateProjectGroupInput {
   sectionId: string;
@@ -27,6 +29,8 @@ export async function executeCreateProjectGroup(
     if (!context || !context.profile) {
       return { success: false, error: 'Authentication required.' };
     }
+
+    assertRateLimit(`rep-group:${context.userId}`, 20, 60000, 'project group creation');
 
     // 1. Strict Scope Assertion: Rep must be assigned to this section
     assertRepresentativeSectionScope(context, input.sectionId);
@@ -161,12 +165,12 @@ export async function executeCreateProjectGroup(
     }
 
     // 10. Audit Log
-    await supabase.from('audit_logs').insert({
-      actor_id: context.profile.id,
-      actor_role: 'representative',
+    await writeScopedAuditLog(supabase, {
+      actorId: context.profile.id,
+      actorRole: context.isOwner ? 'system_owner' : 'representative',
       action: 'GROUP_PRECREATED',
-      entity_type: 'group',
-      entity_id: group.id,
+      entityType: 'group',
+      entityId: group.id,
       metadata: {
         section_id: input.sectionId,
         project_id: input.projectId,

@@ -3,6 +3,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { assertRepresentativeSectionScope, type UserSessionContext } from '../auth/roles';
+import { assertRateLimit } from '../security/rate-limiter';
+import { writeScopedAuditLog } from './audit-helper';
 
 export interface PrepareDeliveryInput {
   sectionId: string;
@@ -45,6 +47,8 @@ export async function executePrepareDeliveryBatch(
     if (!context || !context.profile) {
       return { success: false, error: 'Authentication required.' };
     }
+
+    assertRateLimit(`rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
 
     // 1. Strict Scope Assertion: Representative must be assigned to section
     assertRepresentativeSectionScope(context, input.sectionId);
@@ -122,12 +126,12 @@ export async function executePrepareDeliveryBatch(
     }
 
     // 6. Record Audit Event
-    await supabase.from('audit_logs').insert({
-      actor_id: context.profile.id,
-      actor_role: 'representative',
+    await writeScopedAuditLog(supabase, {
+      actorId: context.profile.id,
+      actorRole: context.isOwner ? 'system_owner' : 'representative',
       action: 'TEACHER_DELIVERY_PREPARED',
-      entity_type: 'delivery',
-      entity_id: delivery.id,
+      entityType: 'delivery',
+      entityId: delivery.id,
       metadata: {
         section_id: input.sectionId,
         project_id: input.projectId,
@@ -156,6 +160,8 @@ export async function executeDispatchDelivery(
     if (!context || !context.profile) {
       return { success: false, error: 'Authentication required.' };
     }
+
+    assertRateLimit(`rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
 
     const { data: delivery, error: fetchErr } = await supabase
       .from('deliveries')
@@ -186,12 +192,12 @@ export async function executeDispatchDelivery(
       return { success: false, error: updateErr.message };
     }
 
-    await supabase.from('audit_logs').insert({
-      actor_id: context.profile.id,
-      actor_role: 'representative',
+    await writeScopedAuditLog(supabase, {
+      actorId: context.profile.id,
+      actorRole: context.isOwner ? 'system_owner' : 'representative',
       action: 'TEACHER_DELIVERY_DISPATCHED',
-      entity_type: 'delivery',
-      entity_id: deliveryId,
+      entityType: 'delivery',
+      entityId: deliveryId,
       metadata: { section_id: delivery.section_id, notes: dispatchNotes },
     });
 
@@ -213,6 +219,8 @@ export async function executeAcknowledgeDelivery(
     if (!context || !context.profile) {
       return { success: false, error: 'Authentication required.' };
     }
+
+    assertRateLimit(`rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
 
     const { data: delivery, error: fetchErr } = await supabase
       .from('deliveries')
@@ -238,12 +246,12 @@ export async function executeAcknowledgeDelivery(
       return { success: false, error: updateErr.message };
     }
 
-    await supabase.from('audit_logs').insert({
-      actor_id: context.profile.id,
-      actor_role: 'representative',
+    await writeScopedAuditLog(supabase, {
+      actorId: context.profile.id,
+      actorRole: context.isOwner ? 'system_owner' : 'representative',
       action: 'TEACHER_DELIVERY_ACKNOWLEDGED',
-      entity_type: 'delivery',
-      entity_id: deliveryId,
+      entityType: 'delivery',
+      entityId: deliveryId,
       metadata: { section_id: delivery.section_id },
     });
 
@@ -265,6 +273,8 @@ export async function executeGetDeliveryPackageManifest(
     if (!context || !context.profile) {
       return { error: 'Authentication required.' };
     }
+
+    assertRateLimit(`rep-delivery-manifest:${context.userId}`, 30, 60000, 'delivery manifest generation');
 
     const { data: delivery, error: fetchErr } = await supabase
       .from('deliveries')

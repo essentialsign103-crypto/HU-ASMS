@@ -9,10 +9,11 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace=apps/bot",
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w packages/types && npm run build -w packages/shared && npm run build -w packages/validation && npm run build -w packages/database && npm run build -w apps/bot && npm run build -w apps/web",
     "lint": "npm run lint --workspaces",
     "typecheck": "npm run typecheck --workspaces",
-    "test": "npm run test --workspaces"
+    "test": "npm run test --workspaces",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage \"apps/bot/test/**/*.test.ts\" \"apps/web/test/**/*.test.ts\" \"packages/database/test/**/*.test.ts\""
   },
   "keywords": [
     "haramaya-university",
