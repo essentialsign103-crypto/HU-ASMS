@@ -107,7 +107,29 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
       '20261111000003_track_b_function_privilege_and_default_acl_hardening.sql',
       '20261112000001_critical_blockers_persistence_and_identity_hardening.sql',
       '20261112000002_minimum_deployment_blocker_fixes.sql',
+      '20261112000003_post_deployment_security_hardening.sql',
     ]);
+
+    const postDeploySql = fs.readFileSync(
+      path.join(migrationsDir, '20261112000003_post_deployment_security_hardening.sql'),
+      'utf8'
+    );
+    assert.match(
+      postDeploySql,
+      /REVOKE TRUNCATE, TRIGGER, REFERENCES[\s\S]*?ON TABLE public\.student_verification_tokens[\s\S]*?FROM authenticated;/i
+    );
+    assert.match(
+      postDeploySql,
+      /ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public[\s\S]*?REVOKE TRUNCATE, TRIGGER, REFERENCES ON TABLES FROM authenticated;/i
+    );
+    assert.match(
+      postDeploySql,
+      /CREATE POLICY "System Owners manage student verification tokens"[\s\S]*?TO authenticated[\s\S]*?USING \(public\.auth_is_system_owner\(\)\)/i
+    );
+    assert.match(
+      postDeploySql,
+      /UPDATE storage\.buckets[\s\S]*?SET file_size_limit = 20971520[\s\S]*?WHERE id = 'submission-files-vault';/i
+    );
 
     const cbSql = fs.readFileSync(
       path.join(migrationsDir, '20261112000001_critical_blockers_persistence_and_identity_hardening.sql'),
