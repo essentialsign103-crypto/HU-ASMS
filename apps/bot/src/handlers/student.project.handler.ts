@@ -2,7 +2,11 @@
 import { InlineKeyboard } from 'grammy';
 import type { BotContext } from '../types/context.js';
 import { getSupabaseAdminClient, DatabaseService, AcademicManagementService } from '@hu-asms/database';
-import { formatDateUTC, formatFileSize } from '@hu-asms/shared';
+import {
+  formatDateUTC,
+  formatFileSize,
+  resolveEffectiveTelegramMaxFileSizeBytes,
+} from '@hu-asms/shared';
 
 export async function handleStudentMyProjects(ctx: BotContext): Promise<void> {
   const telegramUserId = ctx.from?.id;
@@ -67,9 +71,9 @@ export async function handleProjectDetailsCallback(
   }
 
   const allowedFormats = proj.file_rules?.allowed_extensions?.map((e) => `.${e}`).join(', ') || '.pdf';
-  const maxMb = proj.file_rules?.max_file_size_bytes
-    ? formatFileSize(proj.file_rules.max_file_size_bytes)
-    : '20 MB';
+  const maxMb = formatFileSize(
+    resolveEffectiveTelegramMaxFileSizeBytes(proj.file_rules?.max_file_size_bytes)
+  );
   const typeBadge = proj.submission_type === 'group' ? '👥 Group Project' : '👤 Individual Assignment';
 
   let detailMsg =

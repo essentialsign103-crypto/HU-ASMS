@@ -5,8 +5,13 @@ import {
   getStudentMainMenuKeyboard,
   getRepresentativeMainMenuKeyboard,
 } from '../keyboards/main-menu.js';
+import { requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function handleStartCommand(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'registration and account access'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) {
     await ctx.reply('Error: Could not identify your Telegram account.');
@@ -35,9 +40,19 @@ export async function handleStartCommand(ctx: BotContext): Promise<void> {
     return;
   }
 
-  // 2. Check if Telegram account is already linked to an approved student record
+  // 2. Check if Telegram account is already linked to an approved/suspended student record
   const student = await db.findStudentByTelegramId(telegramUserId);
   if (student) {
+    if (student.registration_status === 'suspended') {
+      await ctx.reply(
+        `🚫 *Account Suspended*\n\n` +
+          `Your student record (\`${student.hu_student_id}\`) is currently suspended.\n` +
+          `Please contact the System Owner / Academic Administrator for assistance.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
     // Also retrieve assigned representative for their section
     const reps = await db.getSectionRepresentatives(student.section_id);
     const repNames = reps.map((r) => r.profile?.full_name).join(', ') || 'Not assigned yet';

@@ -6,12 +6,25 @@ import type { BotConversation, BotContext } from '../types/context.js';
 import { GroupSubmissionService, GroupSubmissionError } from '../services/group-submission.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { getSupabaseAdminClient, DatabaseService } from '@hu-asms/database';
-import { formatDateUTC, formatFileSize, BOT_MESSAGES } from '@hu-asms/shared';
+import {
+  formatDateUTC,
+  formatFileSize,
+  BOT_MESSAGES,
+  SYSTEM_CONSTANTS,
+  resolveEffectiveTelegramMaxFileSizeBytes,
+} from '@hu-asms/shared';
+import { validateSubmissionFile } from '@hu-asms/validation';
+import { downloadTelegramDocument, TelegramFileDownloadError } from '../utils/telegram-file.js';
+import { requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function groupSubmissionConversation(
   conversation: BotConversation,
   ctx: BotContext
 ): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'group submission'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) {
     await ctx.reply('Error: Telegram account cannot be identified.');
@@ -195,9 +208,10 @@ export async function groupSubmissionConversation(
   }
 
   const allowedFormats = project.file_rules?.allowed_extensions?.map((e: string) => `.${e}`).join(', ') || '.pdf';
-  const maxSize = project.file_rules?.max_file_size_bytes
-    ? formatFileSize(project.file_rules.max_file_size_bytes)
-    : '20 MB';
+  const effectiveMaxBytes = resolveEffectiveTelegramMaxFileSizeBytes(
+    project.file_rules?.max_file_size_bytes
+  );
+  const maxSize = formatFileSize(effectiveMaxBytes);
 
   const confirmedMembersList = (group.members || [])
     .filter((m: any) => m.confirmation_status === 'confirmed')
@@ -236,39 +250,71 @@ export async function groupSubmissionConversation(
   const filename = doc.file_name || 'group_project.pdf';
   const mimeType = doc.mime_type || 'application/pdf';
   const fileSize = doc.file_size || 0;
+  const maxAllowedBytes = effectiveMaxBytes;
 
-  await ctx.reply('⏳ *Processing and securing group submission...*', { parse_mode: 'Markdown' });
+  const preCheck = validateSubmissionFile({
+    filename,
+    mimeType,
+    sizeBytes: fileSize,
+    allowedExtensions: project.file_rules?.allowed_extensions || ['pdf'],
+    allowedMimeTypes: project.file_rules?.allowed_mime_types || ['application/pdf'],
+    maxSizeBytes: maxAllowedBytes,
+  });
+
+  if (!preCheck.valid) {
+    const sizeGuidance =
+      fileSize > SYSTEM_CONSTANTS.TELEGRAM_BOT_API_MAX_DOWNLOAD_BYTES
+        ? '\n\nFiles submitted via Telegram cannot exceed 20 MB. Please compress or split your team document and run /submit_group again.'
+        : '';
+    await ctx.reply(`❌ *Group Submission Rejected:* ${preCheck.error}${sizeGuidance}`, {
+      parse_mode: 'Markdown',
+    });
+    return;
+  }
+
+  await ctx.reply('⏳ *Downloading, validating content, and securing group submission...*', {
+    parse_mode: 'Markdown',
+  });
 
   try {
-    const result = await conversation.external(() =>
-      groupSubmissionService.submitGroupAssignment({
+    const result = await conversation.external(async () => {
+      const downloaded = await downloadTelegramDocument({
+        api: ctx.api,
+        fileId: doc.file_id,
+        maxSizeBytes: maxAllowedBytes,
+        declaredSizeBytes: fileSize,
+      });
+
+      return groupSubmissionService.submitGroupAssignment({
         telegramUserId,
         groupId: group.id,
         projectId: project.id,
         file: {
           originalFilename: filename,
           mimeType,
-          sizeBytes: fileSize,
+          sizeBytes: downloaded.sizeBytes,
           telegramFileId: doc.file_id,
+          buffer: downloaded.buffer,
         },
-      })
-    );
+      });
+    });
 
     const versionLabel = result.isResubmission ? ` (Version ${result.version} - Resubmission)` : '';
+    const storedSize = result.file.file_size_bytes || fileSize;
     await ctx.reply(
       `🎉 *Group Submission Successfully Received!*${versionLabel}\n\n` +
         `• *Group:* ${group.group_code}\n` +
         `• *Project:* ${project.title}\n` +
         `• *Submitting Leader:* ${student.full_name}\n` +
         `• *Credited Members:* ${result.confirmedMembersCount} verified students\n` +
-        `• *File:* \`${filename}\` (${formatFileSize(fileSize)})\n` +
+        `• *File:* \`${filename}\` (${formatFileSize(storedSize)})\n` +
         `• *Submission Version:* ${result.version}\n` +
         `• *Timestamp:* ${new Date().toUTCString()}\n\n` +
         `✅ Your section representative has been automatically notified and will review your group's submission.`,
       { parse_mode: 'Markdown' }
     );
   } catch (err: unknown) {
-    if (err instanceof GroupSubmissionError) {
+    if (err instanceof GroupSubmissionError || err instanceof TelegramFileDownloadError) {
       await ctx.reply(`❌ *Group Submission Rejected:* ${err.message}`, { parse_mode: 'Markdown' });
     } else {
       const msg = err instanceof Error ? err.message : String(err);

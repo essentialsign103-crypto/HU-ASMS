@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeFilename } from '@hu-asms/validation';
 import {
+  MemoryRateLimiter,
   globalWebRateLimiter,
   assertRateLimit,
 } from '../src/lib/security/rate-limiter.js';
@@ -92,6 +93,47 @@ describe('Phase 13 — Security Hardening, Input Sanitization & Web Protection T
         () => assertRateLimit('rep-sign-url', 1, 5000, 'signed URL generation'),
         /Too many requests: Rate limit for signed URL generation exceeded/
       );
+    });
+
+    it('MemoryRateLimiter.pruneExpired evicts expired buckets and updates size', () => {
+      const limiter = new MemoryRateLimiter(100, 60_000);
+      assert.equal(limiter.check('key-a', 2, 1000, 1000).allowed, true);
+      assert.equal(limiter.check('key-b', 2, 5000, 1000).allowed, true);
+      assert.equal(limiter.size(), 2);
+
+      const evictedAt2500 = limiter.pruneExpired(2500);
+      assert.equal(evictedAt2500, 1);
+      assert.equal(limiter.size(), 1);
+
+      const evictedAt7000 = limiter.pruneExpired(7000);
+      assert.equal(evictedAt7000, 1);
+      assert.equal(limiter.size(), 0);
+    });
+
+    it('MemoryRateLimiter automatically sweeps expired entries after pruneIntervalMs and bounds capacity via LRU', () => {
+      const limiter = new MemoryRateLimiter(3, 500);
+
+      // Fill capacity=3 with differing expiries
+      assert.equal(limiter.check('k1', 2, 200, 1000).allowed, true);
+      assert.equal(limiter.check('k2', 2, 5000, 1100).allowed, true);
+      assert.equal(limiter.check('k3', 2, 5000, 1200).allowed, true);
+      assert.equal(limiter.size(), 3);
+
+      // At t=1600 (>= 1000 + 500), k1 is expired; check('k4') triggers periodic sweep + keeps within capacity 3
+      assert.equal(limiter.check('k4', 2, 5000, 1600).allowed, true);
+      assert.equal(limiter.size(), 3);
+
+      // Touch k2 so k3 becomes least recently used among active entries [k4, k2] vs oldest k3
+      assert.equal(limiter.check('k2', 2, 5000, 1650).allowed, true);
+      // Inserting k5 when all 3 (k3, k4, k2) are unexpired must evict LRU (k3) and keep size capped at 3
+      assert.equal(limiter.check('k5', 2, 5000, 1700).allowed, true);
+      assert.equal(limiter.size(), 3);
+
+      // k3's earlier hit should have been evicted, so its quota starts fresh (remaining=1 for max=2)
+      const k3Res = limiter.check('k3', 2, 5000, 1750);
+      assert.equal(k3Res.allowed, true);
+      assert.equal(k3Res.remaining, 1);
+      assert.equal(limiter.size(), 3);
     });
   });
 

@@ -1,6 +1,7 @@
 // HU-ASMS: Representative Management Console
 import React from 'react';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../../lib/auth/page-guards';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { ShieldCheck, UserCheck } from 'lucide-react';
@@ -8,6 +9,7 @@ import { formatDateUTC } from '@hu-asms/shared';
 
 export default async function RepresentativesPage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   const [
     { data: representatives },

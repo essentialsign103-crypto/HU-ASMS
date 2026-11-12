@@ -2,6 +2,7 @@
 // Handles Courses, Teachers, Dynamic Projects, Multi-Scope Targeting, and File Rules
 
 import { SupabaseClient } from '@supabase/supabase-js';
+import { SYSTEM_CONSTANTS } from '@hu-asms/shared';
 import type {
   Course,
   Teacher,
@@ -253,6 +254,17 @@ export class AcademicManagementService {
       throw new Error(`Minimum group size (${minGroup}) cannot exceed maximum group size (${maxGroup}).`);
     }
 
+    const requestedMaxFileBytes =
+      dto.file_rules.max_file_size_bytes ?? SYSTEM_CONSTANTS.DEFAULT_MAX_FILE_SIZE_BYTES;
+    if (!Number.isFinite(requestedMaxFileBytes) || requestedMaxFileBytes <= 0) {
+      throw new Error('Project maximum file size must be greater than 0 bytes.');
+    }
+    if (requestedMaxFileBytes > SYSTEM_CONSTANTS.TELEGRAM_BOT_API_MAX_DOWNLOAD_BYTES) {
+      throw new Error(
+        `Project maximum file size cannot exceed 20 MB (${SYSTEM_CONSTANTS.TELEGRAM_BOT_API_MAX_DOWNLOAD_BYTES} bytes), the Telegram Cloud Bot API download limit.`
+      );
+    }
+
     // 1. Insert Project master record
     const { data: project, error: projErr } = await this.client
       .from('projects')
@@ -306,7 +318,7 @@ export class AcademicManagementService {
         project_id: project.id,
         allowed_extensions: allowedExtensions,
         allowed_mime_types: allowedMimes,
-        max_file_size_bytes: dto.file_rules.max_file_size_bytes ?? 20971520, // 20 MB
+        max_file_size_bytes: requestedMaxFileBytes,
         min_group_size: minGroup,
         max_group_size: maxGroup,
       })

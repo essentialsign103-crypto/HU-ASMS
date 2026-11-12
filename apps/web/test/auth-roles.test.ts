@@ -14,7 +14,7 @@ describe('Phase 11 — Web Dashboard Authentication & Role Guard Tests', () => {
     id: 'user-owner-1',
     telegram_user_id: 11111111,
     full_name: 'Dr. System Owner',
-    role: 'owner',
+    role: 'system_owner',
     is_active: true,
   };
 
@@ -114,7 +114,7 @@ describe('Phase 11 — Web Dashboard Authentication & Role Guard Tests', () => {
     assert.ok(context);
     assert.equal(context.isOwner, true);
     assert.equal(context.isRepresentative, true);
-    assert.equal(context.profile?.role, 'owner');
+    assert.equal(context.profile?.role, 'system_owner');
     assert.equal(context.profile?.full_name, 'Dr. System Owner');
   });
 
@@ -233,5 +233,27 @@ describe('Phase 11 — Web Dashboard Authentication & Role Guard Tests', () => {
       () => assertRepresentativeSectionScope(repContext, 'sec-3a'),
       /Forbidden: Access denied for section sec-3a/
     );
+  });
+
+  it('should reject legacy owner role alias in favor of canonical system_owner role', async () => {
+    const legacyOwnerProfile = {
+      id: 'user-legacy-owner',
+      telegram_user_id: 99999999,
+      full_name: 'Legacy Owner Alias',
+      role: 'owner',
+      is_active: true,
+    };
+    const mockClient = createMockSupabase(
+      { id: 'user-legacy-owner', email: 'legacy@haramaya.edu.et' },
+      legacyOwnerProfile
+    );
+
+    const context = await resolveUserSessionContext(mockClient);
+
+    assert.ok(context);
+    assert.equal(context.isOwner, false);
+    assert.equal(context.isRepresentative, false);
+    assert.deepEqual(context.assignments, []);
+    assert.throws(() => assertSystemOwner(context), /Forbidden: System Owner privileges required/);
   });
 });

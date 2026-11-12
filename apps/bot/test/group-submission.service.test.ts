@@ -729,6 +729,7 @@ describe('Phase 09 — Group Submission Service Unit Tests', () => {
         originalFilename: 'capstone_final.pdf',
         mimeType: 'application/pdf',
         sizeBytes: 1024,
+        buffer: Buffer.from('%PDF-1.4 capstone final duplicate check'),
       },
     };
 
@@ -814,7 +815,7 @@ describe('Phase 09 — Group Submission Service Unit Tests', () => {
         originalFilename: 'report.pdf',
         mimeType: 'application/pdf',
         sizeBytes: 1024,
-        buffer: Buffer.from('test'),
+        buffer: Buffer.from('%PDF-1.4 test'),
       },
     };
 
@@ -851,6 +852,7 @@ describe('Phase 09 — Group Submission Service Unit Tests', () => {
         originalFilename: 'architecture_report.pdf',
         mimeType: 'application/pdf',
         sizeBytes: 1024,
+        buffer: Buffer.from('%PDF-1.4 resilient group pdf'),
       },
     };
 

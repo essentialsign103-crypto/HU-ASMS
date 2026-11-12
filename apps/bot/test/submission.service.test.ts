@@ -238,6 +238,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
           mimeType: 'application/pdf',
           sizeBytes: 1048576, // 1 MB
           telegramFileId: 'tg-file-123',
+          buffer: Buffer.from('%PDF-1.4 assignment 1 bytes'),
         },
       });
 
@@ -266,6 +267,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
           originalFilename: 'database_assignment1_revised.pdf',
           mimeType: 'application/pdf',
           sizeBytes: 1572864, // 1.5 MB
+          buffer: Buffer.from('%PDF-1.4 assignment 1 revised bytes'),
         },
       });
 
@@ -294,6 +296,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
           originalFilename: 'final_exam.pdf',
           mimeType: 'application/pdf',
           sizeBytes: 1048576,
+          buffer: Buffer.from('%PDF-1.4 final exam content'),
         },
       });
 
@@ -307,6 +310,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
               originalFilename: 'final_exam_attempt2.pdf',
               mimeType: 'application/pdf',
               sizeBytes: 1048576,
+              buffer: Buffer.from('%PDF-1.4 final exam attempt 2'),
             },
           });
         },
@@ -499,7 +503,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
               originalFilename: 'failing_upload.pdf',
               mimeType: 'application/pdf',
               sizeBytes: 1024,
-              buffer: Buffer.from('test pdf content'),
+              buffer: Buffer.from('%PDF-1.4 test pdf content'),
             },
           });
         },
@@ -529,6 +533,7 @@ describe('Phase 07 — Individual Submission Service Unit Tests', () => {
           originalFilename: 'resilient_submission.pdf',
           mimeType: 'application/pdf',
           sizeBytes: 1024,
+          buffer: Buffer.from('%PDF-1.4 resilient pdf content'),
         },
       });
 

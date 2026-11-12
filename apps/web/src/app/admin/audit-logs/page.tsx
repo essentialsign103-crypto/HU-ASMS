@@ -1,12 +1,14 @@
 // HU-ASMS: System Audit Logs Viewer
 import React from 'react';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../../lib/auth/page-guards';
 import { Card } from '../../../components/ui/card';
 import { FileClock } from 'lucide-react';
 import { formatDateUTC } from '@hu-asms/shared';
 
 export default async function AuditLogsPage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   const { data: logs } = await supabase
     .from('audit_logs')

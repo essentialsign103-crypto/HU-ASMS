@@ -125,7 +125,7 @@ BEGIN
         project_id, allowed_extensions, allowed_mime_types, max_file_size_bytes, min_group_size, max_group_size
     ) VALUES 
         (project_db_id, ARRAY['pdf'], ARRAY['application/pdf'], 20971520, 1, 1),
-        (project_se_id, ARRAY['pdf', 'zip'], ARRAY['application/pdf', 'application/zip'], 52428800, 2, 5)
+        (project_se_id, ARRAY['pdf', 'zip'], ARRAY['application/pdf', 'application/zip'], 20971520, 2, 5)
     ON CONFLICT (project_id) DO NOTHING;
 
     -- 9. Sample Students (3rd Year, Section B)
@@ -133,7 +133,7 @@ BEGIN
         id, hu_student_id, full_name, department_id, academic_year_id, section_id,
         registration_status, is_locked, phone
     ) VALUES
-        (student_hamza_id, 'HU/10294/14', 'Hamza Mohammed (Representative)', dept_se_id, year_3_id, sec_3b_id, 'approved', true, '+251911223344'),
+        (student_hamza_id, '1341/17', 'Hamza Teha(Representative)', dept_se_id, year_3_id, sec_3b_id, 'approved', true, '+251965614501'),
         (student_a_id,     'HU/10295/14', 'Student A (Almaz Kebede)', dept_se_id, year_3_id, sec_3b_id, 'approved', true, '+251911223345'),
         (student_b_id,     'HU/10296/14', 'Student B (Beshir Ahmed)', dept_se_id, year_3_id, sec_3b_id, 'approved', true, '+251911223346'),
         (student_c_id,     'HU/10297/14', 'Student C (Chala Bekele)', dept_se_id, year_3_id, sec_3b_id, 'approved', true, '+251911223347')

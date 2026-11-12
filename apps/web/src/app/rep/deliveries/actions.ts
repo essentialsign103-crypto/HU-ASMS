@@ -6,7 +6,11 @@
 import { revalidatePath } from 'next/cache';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
 import { resolveUserSessionContext } from '../../../lib/auth/roles';
-import { assertRateLimit } from '../../../lib/security/rate-limiter';
+import { assertDistributedRateLimit } from '../../../lib/security/rate-limiter';
+import {
+  validateDeliveryBatchUuids,
+  validateUuidIdentifier,
+} from '../../../lib/rep/input-validation';
 import {
   executePrepareDeliveryBatch,
   executeDispatchDelivery,
@@ -29,8 +33,13 @@ export async function prepareDeliveryBatch(
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      await assertDistributedRateLimit('web:rep-delivery:unauth', 15, 60000, 'delivery batch operations');
       return { success: false, error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
+    const uuidError = validateDeliveryBatchUuids(input);
+    if (uuidError) {
+      return { success: false, error: uuidError };
     }
     const result = await executePrepareDeliveryBatch(supabase, context, input);
     if (result.success) {
@@ -54,8 +63,13 @@ export async function dispatchDelivery(
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      await assertDistributedRateLimit('web:rep-delivery:unauth', 15, 60000, 'delivery batch operations');
       return { success: false, error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
+    const uuidError = validateUuidIdentifier(deliveryId, 'delivery');
+    if (uuidError) {
+      return { success: false, error: uuidError };
     }
     const result = await executeDispatchDelivery(supabase, context, deliveryId, dispatchNotes);
     if (result.success) {
@@ -78,8 +92,13 @@ export async function acknowledgeDelivery(
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      await assertDistributedRateLimit('web:rep-delivery:unauth', 15, 60000, 'delivery batch operations');
       return { success: false, error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
+    const uuidError = validateUuidIdentifier(deliveryId, 'delivery');
+    if (uuidError) {
+      return { success: false, error: uuidError };
     }
     const result = await executeAcknowledgeDelivery(supabase, context, deliveryId);
     if (result.success) {
@@ -100,8 +119,13 @@ export async function getDeliveryPackageManifest(deliveryId: string): Promise<De
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('rep-delivery-manifest:unauth', 15, 60000, 'delivery manifest generation');
+      await assertDistributedRateLimit('web:rep-delivery-manifest:unauth', 15, 60000, 'delivery manifest generation');
       return { error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-delivery-manifest:${context.userId}`, 30, 60000, 'delivery manifest generation');
+    const uuidError = validateUuidIdentifier(deliveryId, 'delivery');
+    if (uuidError) {
+      return { error: uuidError };
     }
     return executeGetDeliveryPackageManifest(supabase, context, deliveryId);
   } catch (err: any) {

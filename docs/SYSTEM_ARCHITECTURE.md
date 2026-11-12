@@ -38,3 +38,15 @@ hu-academic-system/
    - Identified by their unique 64-bit numeric Telegram account ID (`telegram_user_id`).
    - Students register and lock their official Haramaya University Student ID (`hu_student_id`).
    - Representatives are recognized via `representative_assignments` matching their `telegram_user_id`.
+
+## 3. Vercel Monorepo Deployment Configuration
+
+When deploying the Next.js administrative and representative portal (`@hu-asms/web`) on Vercel from this monorepo:
+
+- **Vercel Project Root Directory**: Set to `apps/web`.
+- **Include files outside the root directory in the Build Step**: **Enabled** (required so `apps/web/vercel.json` can install dependencies and build internal `@hu-asms/*` workspace packages from `../..`).
+- **Framework Preset**: `Next.js` (matches `framework: "nextjs"` in `apps/web/vercel.json`, writing build artifacts directly to `apps/web/.next`).
+- **Monorepo Install & Build Commands** (`apps/web/vercel.json`, UTF-8 without BOM):
+  - `installCommand`: `cd ../.. && npm install`
+  - `buildCommand`: `cd ../.. && npm run build`
+- **File Tracing Root** (`apps/web/next.config.mjs`): `outputFileTracingRoot` resolves two levels up to the monorepo root so shared `@hu-asms/*` packages are bundled reliably during Vercel serverless packaging.

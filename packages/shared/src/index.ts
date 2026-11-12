@@ -3,11 +3,26 @@
 export const SYSTEM_CONSTANTS = {
   UNIVERSITY_NAME: 'Haramaya University',
   SYSTEM_TITLE: 'Academic Submission Management System (HU-ASMS)',
+  TELEGRAM_BOT_API_MAX_DOWNLOAD_BYTES: 20 * 1024 * 1024, // 20 MB Cloud Bot API getFile limit
   DEFAULT_MAX_FILE_SIZE_BYTES: 20 * 1024 * 1024, // 20 MB
   STORAGE_BUCKET_NAME: 'submission-files-vault',
   DEFAULT_ALLOWED_EXTENSIONS: ['pdf'],
   DEFAULT_ALLOWED_MIME_TYPES: ['application/pdf'],
 };
+
+/**
+ * Resolves the effective submission file size ceiling in bytes, clamping any
+ * project setting to the 20 MB Telegram Cloud Bot API `getFile` download limit.
+ */
+export function resolveEffectiveTelegramMaxFileSizeBytes(
+  configuredBytes?: number | null
+): number {
+  const raw =
+    typeof configuredBytes === 'number' && Number.isFinite(configuredBytes) && configuredBytes > 0
+      ? configuredBytes
+      : SYSTEM_CONSTANTS.DEFAULT_MAX_FILE_SIZE_BYTES;
+  return Math.min(raw, SYSTEM_CONSTANTS.TELEGRAM_BOT_API_MAX_DOWNLOAD_BYTES);
+}
 
 export const BOT_MESSAGES = {
   WELCOME_UNREGISTERED:

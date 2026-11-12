@@ -17,8 +17,17 @@ const KNOWN_ERROR_CODES = new Set([
   'PROJECT_NOT_OPEN',
   'DEADLINE_EXCEEDED',
   'FILE_VALIDATION_FAILED',
+  'FILE_DOWNLOAD_REQUIRED',
+  'FILE_DOWNLOAD_FAILED',
+  'INVALID_FILE',
+  'STORAGE_UPLOAD_FAILED',
+  'DATABASE_PERSISTENCE_FAILED',
   'DUPLICATE_SUBMISSION',
   'DUPLICATE_GROUP_SUBMISSION',
+  'UNREGISTERED_STUDENT',
+  'ACCOUNT_SUSPENDED',
+  'NOT_ELIGIBLE_SCOPE',
+  'INVALID_SUBMISSION_TYPE',
   'GROUP_NOT_FOUND',
   'GROUP_NOT_VERIFIED',
   'UNAUTHORIZED_SUBMITTER',
@@ -26,6 +35,7 @@ const KNOWN_ERROR_CODES = new Set([
   'INVALID_GROUP_CODE',
   'GROUP_TOO_SMALL',
   'GROUP_TOO_LARGE',
+  'GROUP_CAPACITY_VIOLATION',
   'CROSS_SECTION_VIOLATION',
   'ALREADY_IN_GROUP',
   'RATE_LIMIT_EXCEEDED',
@@ -100,6 +110,10 @@ export function formatSafeErrorMessage(err: any): SafeErrorOutput {
  * Redacts secrets, tokens, and credentials from log payloads.
  */
 export function sanitizeLogData(obj: any): any {
+  if (typeof obj === 'string') {
+    return obj.replace(/bot\d+:[A-Za-z0-9_-]{20,}/g, 'bot[REDACTED]');
+  }
+
   if (!obj || typeof obj !== 'object') {
     return obj;
   }
@@ -127,7 +141,7 @@ export function sanitizeLogData(obj: any): any {
     } else if (typeof val === 'object' && val !== null) {
       cleaned[key] = sanitizeLogData(val);
     } else {
-      cleaned[key] = val;
+      cleaned[key] = sanitizeLogData(val);
     }
   }
 

@@ -97,9 +97,9 @@ describe('Phase 04 — Student Registration & Identity Lifecycle Unit Tests', ()
               eq: (col: string, val: unknown) => ({
                 eq: (col2: string, val2: unknown) => ({
                   maybeSingle: async () => {
-                    if (col === 'hu_student_id' && col2 === 'status') {
+                    if ((col === 'hu_student_id' || col === 'telegram_user_id') && col2 === 'status') {
                       const match = mockPendingRequests.find(
-                        (r) => r.hu_student_id === val && r.status === val2
+                        (r) => (r as any)[col] === val && r.status === val2
                       );
                       return { data: match || null, error: null };
                     }
@@ -153,28 +153,26 @@ describe('Phase 04 — Student Registration & Identity Lifecycle Unit Tests', ()
       assert.equal(result.student.full_name, 'Hamza Mohammed');
     });
 
-    it('Scenario 2: should block unauthorized identity claim if linked to another Telegram user', async () => {
+    it('Scenario 2: should block unauthorized identity claim and withhold all PII when linked to another user', async () => {
       const service = new StudentRegistrationService(createMockSupabaseClient());
       // Telegram ID 99999999 attempts to look up Hamza's ID (which is linked to 11111111)
       const result = await service.lookupStudentIdentity('HU/10294/14', 99999999);
 
       assert.equal(result.status, 'linked_to_another_user');
-      assert.ok(result.maskedInfo);
-      // Personal name MUST be masked!
-      assert.equal(result.maskedInfo.maskedName, 'H**** M*****');
+      assert.equal((result as any).maskedInfo, undefined, 'Must not expose masked name or department before verification');
       assert.equal(result.student, undefined, 'Must not return raw student record to unverified user');
     });
 
-    it('Scenario 3: should identify unlinked pre-approved roster record', async () => {
+    it('Scenario 3: should require verification for unlinked roster records without exposing student PII', async () => {
       const service = new StudentRegistrationService(createMockSupabaseClient());
       const result = await service.lookupStudentIdentity('HU/10295/14', 22222222);
 
-      assert.equal(result.status, 'unlinked_roster_record');
-      assert.ok(result.student);
-      assert.equal(result.student.hu_student_id, 'HU/10295/14');
+      assert.equal(result.status, 'unlinked_roster_verification_required');
+      assert.equal(result.student, undefined, 'Must not return stored roster record before verification');
+      assert.equal((result as any).maskedInfo, undefined);
     });
 
-    it('Scenario 4: should identify pending registration requests', async () => {
+    it('Scenario 4: should identify own pending registration requests cleanly', async () => {
       const service = new StudentRegistrationService(createMockSupabaseClient());
       const result = await service.lookupStudentIdentity('HU/10297/14', 44444444);
 
@@ -182,7 +180,7 @@ describe('Phase 04 — Student Registration & Identity Lifecycle Unit Tests', ()
       assert.ok(result.pendingRequest);
     });
 
-    it('Scenario 5: should identify suspended accounts', async () => {
+    it('Scenario 5: should identify own suspended accounts while refusing foreign probes', async () => {
       const service = new StudentRegistrationService(createMockSupabaseClient());
       const result = await service.lookupStudentIdentity('HU/10296/14', 33333333);
 
@@ -198,15 +196,13 @@ describe('Phase 04 — Student Registration & Identity Lifecycle Unit Tests', ()
     });
   });
 
-  describe('3. Account Binding and Locking', () => {
-    it('should link unlinked roster student to Telegram account and lock identity', async () => {
+  describe('3. Account Binding and Locking Security Gate', () => {
+    it('should reject unverified direct roster linking via HU ID alone', async () => {
       const service = new StudentRegistrationService(createMockSupabaseClient());
-      const updated = await service.linkRosterStudentToTelegram('student-2', 22222222, 'almaz_k');
-
-      assert.equal(updated.telegram_user_id, 22222222);
-      assert.equal(updated.telegram_username, 'almaz_k');
-      assert.equal(updated.registration_status, 'locked');
-      assert.equal(updated.is_locked, true);
+      await assert.rejects(
+        async () => await service.linkRosterStudentToTelegram('student-2', 22222222, 'almaz_k'),
+        /Direct unverified roster linking is disabled/
+      );
     });
   });
 

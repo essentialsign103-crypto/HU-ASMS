@@ -384,6 +384,29 @@ describe('Phase 06 — Academic Management Service Unit Tests', () => {
         /cannot exceed maximum group size/
       );
     });
+
+    it('should reject project max_file_size_bytes exceeding the 20 MB Telegram Bot API limit', async () => {
+      const service = new AcademicManagementService(createMockSupabaseClient());
+
+      await assert.rejects(
+        async () => {
+          await service.createProject({
+            course_id: 'course-1',
+            teacher_id: 'teacher-1',
+            title: 'Oversized File Limit Project',
+            submission_type: 'individual',
+            opening_date: '2026-11-10T00:00:00Z',
+            deadline: '2026-11-20T00:00:00Z',
+            targets: [{ academic_year_id: 'year-3' }],
+            file_rules: {
+              allowed_extensions: ['pdf'],
+              max_file_size_bytes: 25 * 1024 * 1024, // Exceeds 20 MB Telegram download cap
+            },
+          });
+        },
+        /cannot exceed 20 MB/
+      );
+    });
   });
 
   describe('4. Scope-based Eligibility Resolution', () => {

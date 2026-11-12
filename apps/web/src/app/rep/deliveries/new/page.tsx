@@ -1,7 +1,11 @@
 // HU-ASMS: Prepare New Delivery Package Page
 import React from 'react';
 import { createServerSupabaseClient } from '../../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../../lib/auth/roles';
+import {
+  resolveAuthorizedSectionScope,
+  resolveUserSessionContext,
+} from '../../../../lib/auth/roles';
+import { ScopeAccessError } from '../../../../components/rep/scope-access-error';
 import { DeliveryForm } from './delivery-form';
 
 export default async function NewDeliveryPage({
@@ -13,12 +17,12 @@ export default async function NewDeliveryPage({
   const supabase = await createServerSupabaseClient();
   const context = await resolveUserSessionContext(supabase);
 
-  if (!context || !context.profile) {
-    return null;
+  const scope = resolveAuthorizedSectionScope(context, params.sectionId);
+  if (!scope.authorized) {
+    return <ScopeAccessError status={scope.status} message={scope.error} />;
   }
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-  const selectedSectionId = params.sectionId || assignedSectionIds[0];
+  const selectedSectionId = scope.sectionId;
 
   // Fetch projects targeted to section
   const { data: projects } = await supabase

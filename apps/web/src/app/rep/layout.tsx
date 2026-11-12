@@ -1,8 +1,7 @@
 // HU-ASMS: Section Representative Portal Layout
 import React from 'react';
-import { redirect } from 'next/navigation';
 import { createServerSupabaseClient } from '../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../lib/auth/page-guards';
 import { RepNav } from '../../components/rep/rep-nav';
 
 export default async function RepLayout({
@@ -11,11 +10,7 @@ export default async function RepLayout({
   children: React.ReactNode;
 }) {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-
-  if (!context || !context.profile || !context.isRepresentative) {
-    redirect('/login?error=representative_required');
-  }
+  const context = await ensureRepresentativePage(supabase);
 
   return (
     <div className="flex min-h-screen bg-slate-100">

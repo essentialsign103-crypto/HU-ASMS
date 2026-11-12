@@ -118,12 +118,17 @@ export function validateSubmissionFile(options: FileValidationOptions): {
     };
   }
 
-  if (options.sizeBytes > options.maxSizeBytes) {
-    const maxMb = (options.maxSizeBytes / (1024 * 1024)).toFixed(1);
+  const effectiveMaxBytes = Math.min(options.maxSizeBytes, 20 * 1024 * 1024);
+  if (options.sizeBytes > effectiveMaxBytes) {
+    const maxMb = (effectiveMaxBytes / (1024 * 1024)).toFixed(1);
     const actualMb = (options.sizeBytes / (1024 * 1024)).toFixed(1);
+    const telegramSuffix =
+      options.maxSizeBytes > 20 * 1024 * 1024 || effectiveMaxBytes === 20 * 1024 * 1024
+        ? ' (Telegram Bot API downloads are limited to 20.0 MB)'
+        : '';
     return {
       valid: false,
-      error: `File size (${actualMb} MB) exceeds maximum permitted limit of ${maxMb} MB.`,
+      error: `File size (${actualMb} MB) exceeds maximum permitted limit of ${maxMb} MB${telegramSuffix}.`,
     };
   }
 
@@ -169,6 +174,16 @@ export function sanitizeFilename(filename: string): string {
   return clean.slice(0, 80);
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates that a string identifier strictly conforms to canonical UUID format.
+ */
+export function isValidUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_PATTERN.test(value.trim());
+}
+
 export function validateGroupMembershipCapacity(
   currentMemberCount: number,
   minGroupSize: number,
@@ -187,4 +202,207 @@ export function validateGroupMembershipCapacity(
     };
   }
   return { valid: true };
+}
+
+export interface FileContentValidationOptions {
+  filename: string;
+  mimeType: string;
+  content: Uint8Array;
+  maxSizeBytes: number;
+}
+
+export interface FileContentValidationResult {
+  valid: boolean;
+  detectedType?: string;
+  error?: string;
+}
+
+function startsWithBytes(buf: Uint8Array, prefix: number[]): boolean {
+  if (buf.length < prefix.length) return false;
+  for (let i = 0; i < prefix.length; i += 1) {
+    if (buf[i] !== prefix[i]) return false;
+  }
+  return true;
+}
+
+function containsAsciiMarker(buf: Uint8Array, marker: string, maxScanBytes = 262144): boolean {
+  const limit = Math.min(buf.length, maxScanBytes);
+  const decoder = new TextDecoder('latin1');
+  return decoder.decode(buf.subarray(0, limit)).includes(marker);
+}
+
+/**
+ * Inspects actual downloaded file bytes against magic signatures, dangerous payloads,
+ * byte-size bounds, and declared extension/MIME type to block spoofed or empty files.
+ */
+export function validateSubmissionFileContent(
+  options: FileContentValidationOptions
+): FileContentValidationResult {
+  const { filename, mimeType, content, maxSizeBytes } = options;
+
+  if (!content || content.byteLength === 0) {
+    return {
+      valid: false,
+      error: 'Downloaded file content is empty (0 bytes).',
+    };
+  }
+
+  if (content.byteLength > maxSizeBytes) {
+    const maxMb = (maxSizeBytes / (1024 * 1024)).toFixed(1);
+    const actualMb = (content.byteLength / (1024 * 1024)).toFixed(1);
+    return {
+      valid: false,
+      error: `Downloaded file size (${actualMb} MB) exceeds maximum permitted limit of ${maxMb} MB.`,
+    };
+  }
+
+  // Reject executable binaries, scripts, and HTML payloads regardless of extension
+  if (
+    startsWithBytes(content, [0x4d, 0x5a]) || // PE/MZ executable
+    startsWithBytes(content, [0x7f, 0x45, 0x4c, 0x46]) || // ELF executable
+    startsWithBytes(content, [0x23, 0x21]) || // Shell shebang (#!)
+    startsWithBytes(content, [0xca, 0xfe, 0xba, 0xbe]) || // Mach-O / Java class
+    startsWithBytes(content, [0xfe, 0xed, 0xfa, 0xce]) ||
+    startsWithBytes(content, [0xfe, 0xed, 0xfa, 0xcf])
+  ) {
+    return {
+      valid: false,
+      error: 'Executable or binary script content is strictly prohibited.',
+    };
+  }
+
+  const headText = new TextDecoder('utf-8', { fatal: false })
+    .decode(content.subarray(0, 512))
+    .trimStart()
+    .toLowerCase();
+  if (
+    headText.startsWith('<!doctype html') ||
+    headText.startsWith('<html') ||
+    headText.startsWith('<script') ||
+    headText.startsWith('<?php')
+  ) {
+    return {
+      valid: false,
+      error: 'HTML or active script payloads cannot be submitted as academic documents.',
+    };
+  }
+
+  const parts = filename.trim().split('.');
+  const ext = parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+  const normalizedMime = (mimeType || '').toLowerCase().trim();
+
+  if (ext === 'pdf') {
+    if (!startsWithBytes(content, [0x25, 0x50, 0x44, 0x46, 0x2d])) {
+      return {
+        valid: false,
+        error: 'File content does not match a valid PDF signature (%PDF-).',
+      };
+    }
+    if (normalizedMime && normalizedMime !== 'application/pdf') {
+      return {
+        valid: false,
+        error: `Declared MIME type "${mimeType}" conflicts with PDF file signature.`,
+      };
+    }
+    return { valid: true, detectedType: 'pdf' };
+  }
+
+  if (ext === 'zip' || ext === 'docx' || ext === 'xlsx' || ext === 'pptx') {
+    if (!startsWithBytes(content, [0x50, 0x4b, 0x03, 0x04])) {
+      return {
+        valid: false,
+        error: `File content does not match a valid ZIP/OOXML archive signature for .${ext}.`,
+      };
+    }
+
+    if (ext === 'docx') {
+      if (!containsAsciiMarker(content, 'word/') && !containsAsciiMarker(content, '[Content_Types].xml')) {
+        return {
+          valid: false,
+          error: 'Archive content is missing required Word (.docx) OOXML structure.',
+        };
+      }
+      return { valid: true, detectedType: 'docx' };
+    }
+
+    if (ext === 'xlsx') {
+      if (!containsAsciiMarker(content, 'xl/') && !containsAsciiMarker(content, '[Content_Types].xml')) {
+        return {
+          valid: false,
+          error: 'Archive content is missing required Excel (.xlsx) OOXML structure.',
+        };
+      }
+      return { valid: true, detectedType: 'xlsx' };
+    }
+
+    if (ext === 'pptx') {
+      if (!containsAsciiMarker(content, 'ppt/') && !containsAsciiMarker(content, '[Content_Types].xml')) {
+        return {
+          valid: false,
+          error: 'Archive content is missing required PowerPoint (.pptx) OOXML structure.',
+        };
+      }
+      return { valid: true, detectedType: 'pptx' };
+    }
+
+    return { valid: true, detectedType: 'zip' };
+  }
+
+  if (ext === 'doc' || ext === 'xls' || ext === 'ppt') {
+    if (!startsWithBytes(content, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) {
+      return {
+        valid: false,
+        error: `File content does not match a valid legacy Office (.${ext}) binary signature.`,
+      };
+    }
+    return { valid: true, detectedType: ext };
+  }
+
+  if (ext === 'png') {
+    if (!startsWithBytes(content, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+      return {
+        valid: false,
+        error: 'File content does not match a valid PNG image signature.',
+      };
+    }
+    return { valid: true, detectedType: 'png' };
+  }
+
+  if (ext === 'jpg' || ext === 'jpeg') {
+    if (!startsWithBytes(content, [0xff, 0xd8, 0xff])) {
+      return {
+        valid: false,
+        error: 'File content does not match a valid JPEG image signature.',
+      };
+    }
+    return { valid: true, detectedType: 'jpeg' };
+  }
+
+  if (ext === 'txt' || ext === 'md' || ext === 'csv' || ext === 'json') {
+    for (let i = 0; i < content.length; i += 1) {
+      if (content[i] === 0x00) {
+        return {
+          valid: false,
+          error: `Binary null bytes detected inside .${ext} text submission.`,
+        };
+      }
+    }
+    try {
+      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(content);
+      if (ext === 'json') {
+        JSON.parse(decoded);
+      }
+      return { valid: true, detectedType: ext };
+    } catch {
+      return {
+        valid: false,
+        error: `File content is not valid UTF-8${ext === 'json' ? '/JSON' : ''} text.`,
+      };
+    }
+  }
+
+  return {
+    valid: false,
+    error: `File type .${ext || 'unknown'} is not supported by content inspection.`,
+  };
 }

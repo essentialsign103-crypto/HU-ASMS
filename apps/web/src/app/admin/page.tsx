@@ -2,6 +2,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { createServerSupabaseClient } from '../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../lib/auth/page-guards';
 import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Users, UserPlus, FolderGit2, FileCheck2, ShieldCheck, ArrowRight } from 'lucide-react';
@@ -9,6 +10,7 @@ import { formatDateUTC } from '@hu-asms/shared';
 
 export default async function AdminOverviewPage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   // Parallel fetch telemetry
   const [

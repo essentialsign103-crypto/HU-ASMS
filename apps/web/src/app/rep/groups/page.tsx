@@ -2,22 +2,22 @@
 import React from 'react';
 import Link from 'next/link';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../../lib/auth/page-guards';
+import { getActiveAssignedSectionIds } from '../../../lib/auth/roles';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { UsersRound, CheckCircle2, Clock, XCircle, Plus } from 'lucide-react';
 
 export default async function RepGroupsPage() {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
+  const context = await ensureRepresentativePage(supabase);
 
-  if (!context || !context.profile) {
-    return null;
-  }
+  const assignedSectionIds = getActiveAssignedSectionIds(context);
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-
-  const { data: groups } = await supabase
+  const { data: groups } =
+    assignedSectionIds.length === 0
+      ? { data: null }
+      : await supabase
     .from('groups')
     .select(`
       *,

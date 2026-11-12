@@ -6,7 +6,8 @@
 import { revalidatePath } from 'next/cache';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
 import { resolveUserSessionContext } from '../../../lib/auth/roles';
-import { assertRateLimit } from '../../../lib/security/rate-limiter';
+import { assertDistributedRateLimit } from '../../../lib/security/rate-limiter';
+import { validateGroupCreationUuids } from '../../../lib/rep/input-validation';
 import {
   executeCreateProjectGroup,
   type CreateProjectGroupInput,
@@ -22,8 +23,13 @@ export async function createProjectGroup(
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('rep-group:unauth', 15, 60000, 'project group creation');
+      await assertDistributedRateLimit('web:rep-group:unauth', 15, 60000, 'project group creation');
       return { success: false, error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-group:${context.userId}`, 20, 60000, 'project group creation');
+    const uuidError = validateGroupCreationUuids(input);
+    if (uuidError) {
+      return { success: false, error: uuidError };
     }
     const result = await executeCreateProjectGroup(supabase, context, input);
     if (result.success) {

@@ -8,8 +8,16 @@ import type {
   Submission,
   SubmissionFile,
 } from '@hu-asms/types';
-import { validateSubmissionFile, sanitizeFilename } from '@hu-asms/validation';
+import { SYSTEM_CONSTANTS, resolveEffectiveTelegramMaxFileSizeBytes } from '@hu-asms/shared';
 import { NotificationService } from './notification.service.js';
+import {
+  SubmissionBinaryError,
+  cleanupOrphanedVaultObject,
+  uploadSubmissionToVault,
+  validateAndPrepareSubmissionBinary,
+  type StorageRemoverFn,
+  type StorageUploaderFn,
+} from '../utils/submission-storage.js';
 
 export class SubmissionError extends Error {
   constructor(message: string, public code: string) {
@@ -42,12 +50,8 @@ export class IndividualSubmissionService {
   constructor(
     private client: SupabaseClient,
     private notificationService?: NotificationService,
-    private storageUploader?: (
-      bucket: string,
-      path: string,
-      fileData: Buffer | Uint8Array,
-      mimeType: string
-    ) => Promise<{ path: string; error?: Error | null }>
+    private storageUploader?: StorageUploaderFn,
+    private storageRemover?: StorageRemoverFn
   ) {}
 
   /**
@@ -147,29 +151,25 @@ export class IndividualSubmissionService {
     }
 
     // -------------------------------------------------------------------------
-    // 3. Validate uploaded file rules
+    // 3. Validate uploaded file metadata, downloaded binary bytes, and content
     // -------------------------------------------------------------------------
     const fileRules = project.file_rules;
-    if (fileRules) {
-      const validationResult = validateSubmissionFile({
-        filename: input.file.originalFilename,
-        mimeType: input.file.mimeType,
-        sizeBytes: input.file.sizeBytes,
-        allowedExtensions: fileRules.allowed_extensions || ['pdf'],
-        allowedMimeTypes: fileRules.allowed_mime_types || ['application/pdf'],
-        maxSizeBytes: fileRules.max_file_size_bytes || 20971520,
+    let preparedBinary;
+    try {
+      preparedBinary = validateAndPrepareSubmissionBinary(input.file, {
+        allowedExtensions: fileRules?.allowed_extensions || ['pdf'],
+        allowedMimeTypes: fileRules?.allowed_mime_types || ['application/pdf'],
+        maxSizeBytes: resolveEffectiveTelegramMaxFileSizeBytes(fileRules?.max_file_size_bytes),
       });
-
-      if (!validationResult.valid) {
-        throw new SubmissionError(
-          validationResult.error || 'File validation failed.',
-          'INVALID_FILE'
-        );
+    } catch (err: unknown) {
+      if (err instanceof SubmissionBinaryError) {
+        throw new SubmissionError(err.message, err.code);
       }
+      throw err;
     }
 
     // -------------------------------------------------------------------------
-    // 4. Duplicate prevention & Versioning
+    // 4. Duplicate prevention & version determination (before mutating DB)
     // -------------------------------------------------------------------------
     const { data: existingActiveSub } = await this.client
       .from('submissions')
@@ -189,99 +189,140 @@ export class IndividualSubmissionService {
           'DUPLICATE_SUBMISSION'
         );
       }
-
-      // Project allows resubmission: Mark existing submission as superseded
       isResubmission = true;
       newVersion = (existingActiveSub.version || 1) + 1;
-
-      const { error: supersedeErr } = await this.client
-        .from('submissions')
-        .update({ status: 'superseded' })
-        .eq('id', existingActiveSub.id);
-
-      if (supersedeErr) throw supersedeErr;
     }
 
     // -------------------------------------------------------------------------
-    // 5. Store file securely in private Supabase Storage
+    // 5. Upload validated file bytes to private Supabase Storage FIRST
     // -------------------------------------------------------------------------
-    const sanitizedFilename = sanitizeFilename(input.file.originalFilename);
-    const storagePath = `projects/${project.id}/individual/${student.id}/v${newVersion}_${sanitizedFilename}`;
+    const storagePath = `projects/${project.id}/individual/${student.id}/v${newVersion}_${preparedBinary.safeFilename}`;
 
-    if (input.file.buffer) {
-      if (this.storageUploader) {
-        const uploadRes = await this.storageUploader(
-          'submission-files-vault',
-          storagePath,
-          input.file.buffer,
-          input.file.mimeType
-        );
-        if (uploadRes.error) {
-          throw new SubmissionError(
-            `Storage upload failed: ${uploadRes.error.message}`,
-            'STORAGE_UPLOAD_FAILED'
-          );
-        }
-      } else {
-        const { error: uploadErr } = await this.client.storage
-          .from('submission-files-vault')
-          .upload(storagePath, input.file.buffer, {
-            contentType: input.file.mimeType,
-            upsert: true,
-          });
+    let storedPath: string;
+    try {
+      storedPath = await uploadSubmissionToVault(
+        this.client,
+        storagePath,
+        preparedBinary.buffer,
+        preparedBinary.mimeType,
+        this.storageUploader
+      );
+    } catch (err: unknown) {
+      if (err instanceof SubmissionBinaryError) {
+        throw new SubmissionError(err.message, err.code);
+      }
+      throw new SubmissionError('Private storage upload failed.', 'STORAGE_UPLOAD_FAILED');
+    }
 
-        if (uploadErr) {
-          throw new SubmissionError(
-            `Private storage upload failed: ${uploadErr.message}`,
-            'STORAGE_UPLOAD_FAILED'
-          );
+    // -------------------------------------------------------------------------
+    // 6. Persist submission, file metadata (with SHA-256), and member snapshot
+    //    If any DB step fails, remove uploaded storage file & restore prior version.
+    // -------------------------------------------------------------------------
+    let supersededExisting = false;
+    let createdSubmissionId: string | null = null;
+    let submission: Submission;
+    let subFile: SubmissionFile;
+
+    try {
+      if (existingActiveSub) {
+        const { error: supersedeErr } = await this.client
+          .from('submissions')
+          .update({ status: 'superseded' })
+          .eq('id', existingActiveSub.id);
+
+        if (supersedeErr) throw supersedeErr;
+        supersededExisting = true;
+      }
+
+      const { data: createdSub, error: insertSubErr } = await this.client
+        .from('submissions')
+        .insert({
+          project_id: project.id,
+          section_id: student.section_id,
+          submission_type: 'individual',
+          student_id: student.id,
+          group_id: null,
+          version: newVersion,
+          status: 'active',
+          submitted_by_telegram_id: input.telegramUserId,
+        })
+        .select()
+        .single();
+
+      if (insertSubErr || !createdSub) {
+        throw insertSubErr || new Error('Failed to create submission record.');
+      }
+      submission = createdSub;
+      createdSubmissionId = createdSub.id;
+
+      const { data: createdFile, error: insertFileErr } = await this.client
+        .from('submission_files')
+        .insert({
+          submission_id: submission.id,
+          original_filename: input.file.originalFilename,
+          storage_path: storedPath,
+          file_size_bytes: preparedBinary.actualSizeBytes,
+          mime_type: preparedBinary.mimeType,
+          checksum_sha256: preparedBinary.checksumSha256,
+          telegram_file_id: input.file.telegramFileId || null,
+        })
+        .select()
+        .single();
+
+      if (insertFileErr || !createdFile) {
+        throw insertFileErr || new Error('Failed to persist submission file metadata.');
+      }
+      subFile = createdFile;
+
+      const memberRes = await this.client.from('submission_members').insert({
+        submission_id: submission.id,
+        student_id: student.id,
+        hu_student_id: student.hu_student_id,
+        student_name: student.full_name,
+        is_submitter: true,
+      });
+      if (memberRes?.error) {
+        throw memberRes.error;
+      }
+    } catch (dbErr: unknown) {
+      await cleanupOrphanedVaultObject(this.client, storedPath, this.storageRemover);
+
+      if (createdSubmissionId) {
+        try {
+          const membersTbl = (this.client as any)?.from?.('submission_members');
+          if (typeof membersTbl?.delete === 'function') {
+            await membersTbl.delete().eq('submission_id', createdSubmissionId);
+          }
+          const filesTbl = (this.client as any)?.from?.('submission_files');
+          if (typeof filesTbl?.delete === 'function') {
+            await filesTbl.delete().eq('submission_id', createdSubmissionId);
+          }
+          const subsTbl = (this.client as any)?.from?.('submissions');
+          if (typeof subsTbl?.delete === 'function') {
+            await subsTbl.delete().eq('id', createdSubmissionId);
+          }
+        } catch {
+          // Best-effort cleanup of partially written rows
         }
       }
+
+      if (supersededExisting && existingActiveSub) {
+        try {
+          await this.client
+            .from('submissions')
+            .update({ status: 'active' })
+            .eq('id', existingActiveSub.id);
+        } catch {
+          // Best-effort restoration of prior active submission
+        }
+      }
+
+      const msg = dbErr instanceof Error ? dbErr.message : String((dbErr as any)?.message || dbErr);
+      throw new SubmissionError(
+        `Submission persistence failed and uploaded file was rolled back: ${msg}`,
+        'DATABASE_PERSISTENCE_FAILED'
+      );
     }
-
-    // -------------------------------------------------------------------------
-    // 6. Record submission & file metadata in database
-    // -------------------------------------------------------------------------
-    const { data: submission, error: insertSubErr } = await this.client
-      .from('submissions')
-      .insert({
-        project_id: project.id,
-        section_id: student.section_id,
-        submission_type: 'individual',
-        student_id: student.id,
-        group_id: null,
-        version: newVersion,
-        status: 'active',
-        submitted_by_telegram_id: input.telegramUserId,
-      })
-      .select()
-      .single();
-
-    if (insertSubErr) throw insertSubErr;
-
-    const { data: subFile, error: insertFileErr } = await this.client
-      .from('submission_files')
-      .insert({
-        submission_id: submission.id,
-        original_filename: input.file.originalFilename,
-        storage_path: storagePath,
-        file_size_bytes: input.file.sizeBytes,
-        mime_type: input.file.mimeType,
-        telegram_file_id: input.file.telegramFileId || null,
-      })
-      .select()
-      .single();
-
-    if (insertFileErr) throw insertFileErr;
-
-    // Snapshot student identity at submission time
-    await this.client.from('submission_members').insert({
-      submission_id: submission.id,
-      student_id: student.id,
-      hu_student_id: student.hu_student_id,
-      student_name: student.full_name,
-      is_submitter: true,
-    });
 
     // -------------------------------------------------------------------------
     // 7. Route and notify assigned representative
@@ -296,7 +337,7 @@ export class IndividualSubmissionService {
           studentOrGroupName: student.full_name,
           huStudentId: student.hu_student_id,
           fileName: input.file.originalFilename,
-          fileSizeBytes: input.file.sizeBytes,
+          fileSizeBytes: preparedBinary.actualSizeBytes,
           submissionType: 'individual',
         });
         representativeNotified = notifyRes.dispatchedCount > 0;
@@ -321,7 +362,8 @@ export class IndividualSubmissionService {
         hu_student_id: student.hu_student_id,
         version: newVersion,
         filename: input.file.originalFilename,
-        file_size_bytes: input.file.sizeBytes,
+        file_size_bytes: preparedBinary.actualSizeBytes,
+        checksum_sha256: preparedBinary.checksumSha256,
       },
     });
 

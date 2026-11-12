@@ -1,8 +1,7 @@
 // HU-ASMS: System Owner Layout
 import React from 'react';
-import { redirect } from 'next/navigation';
 import { createServerSupabaseClient } from '../../lib/supabase/server';
-import { resolveUserSessionContext, assertSystemOwner } from '../../lib/auth/roles';
+import { ensureSystemOwnerPage } from '../../lib/auth/page-guards';
 import { AdminNav } from '../../components/admin/admin-nav';
 
 export default async function AdminLayout({
@@ -11,13 +10,7 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }) {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
-
-  try {
-    assertSystemOwner(context);
-  } catch {
-    redirect('/login?error=owner_required');
-  }
+  const context = await ensureSystemOwnerPage(supabase);
 
   return (
     <div className="flex min-h-screen bg-slate-100">

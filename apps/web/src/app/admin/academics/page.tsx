@@ -2,12 +2,14 @@
 import React from 'react';
 import Link from 'next/link';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../../lib/auth/page-guards';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { BookOpen, UserCheck, ArrowRight } from 'lucide-react';
 
 export default async function AcademicManagementPage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   const [
     { data: courses },

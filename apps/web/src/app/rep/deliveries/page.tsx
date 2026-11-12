@@ -2,7 +2,8 @@
 import React from 'react';
 import Link from 'next/link';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../../lib/auth/page-guards';
+import { getActiveAssignedSectionIds } from '../../../lib/auth/roles';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { DeliveryActionsClient } from './delivery-actions-client';
@@ -11,15 +12,14 @@ import { formatDateUTC } from '@hu-asms/shared';
 
 export default async function DeliveriesPage() {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
+  const context = await ensureRepresentativePage(supabase);
 
-  if (!context || !context.profile) {
-    return null;
-  }
+  const assignedSectionIds = getActiveAssignedSectionIds(context);
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-
-  const { data: deliveries } = await supabase
+  const { data: deliveries } =
+    assignedSectionIds.length === 0
+      ? { data: null }
+      : await supabase
     .from('deliveries')
     .select(`
       *,

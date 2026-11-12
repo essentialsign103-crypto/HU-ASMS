@@ -1,6 +1,7 @@
 // HU-ASMS: Edge Authentication & Role Guard Middleware
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { evaluateRouteGuard } from './lib/auth/middleware-guard';
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({
@@ -10,6 +11,8 @@ export async function middleware(request: NextRequest) {
   });
 
   const pathname = request.nextUrl.pathname;
+  const method = request.method;
+  const hasNextActionHeader = request.headers.has('next-action');
 
   // Only protect /admin and /rep routes
   const isAdminRoute = pathname.startsWith('/admin');
@@ -23,7 +26,22 @@ export async function middleware(request: NextRequest) {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    return response;
+    const configDecision = evaluateRouteGuard({
+      pathname,
+      method,
+      hasNextActionHeader,
+      hasSupabaseConfig: false,
+    });
+    if (configDecision.action === 'deny') {
+      return NextResponse.json(
+        { error: configDecision.error },
+        { status: configDecision.status, headers: { 'Cache-Control': 'no-store' } }
+      );
+    }
+    return NextResponse.json(
+      { error: 'Authentication service is not configured.' },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } }
+    );
   }
 
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
@@ -52,45 +70,54 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
 
-  if (!user) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = '/login';
-    loginUrl.searchParams.set('redirectTo', pathname);
-    return NextResponse.redirect(loginUrl);
+  let profile: { role?: string | null; is_active?: boolean | null } | null = null;
+  let profileError = false;
+
+  if (user && !authError) {
+    const { data: profileData, error: profErr } = await supabase
+      .from('profiles')
+      .select('role, is_active')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    profile = profileData;
+    profileError = Boolean(profErr);
   }
 
-  // Resolve user profile role
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role, is_active')
-    .eq('id', user.id)
-    .maybeSingle();
+  const decision = evaluateRouteGuard({
+    pathname,
+    method,
+    hasNextActionHeader,
+    hasSupabaseConfig: true,
+    userId: user?.id ?? null,
+    authError: Boolean(authError),
+    profile,
+    profileError,
+  });
 
-  if (!profile || !profile.is_active) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = '/login';
-    loginUrl.searchParams.set('error', 'inactive_account');
-    return NextResponse.redirect(loginUrl);
+  if (decision.action === 'deny') {
+    return NextResponse.json(
+      { error: decision.error },
+      { status: decision.status, headers: { 'Cache-Control': 'no-store' } }
+    );
   }
 
-  const isOwner = profile.role === 'system_owner' || profile.role === 'owner';
-  const isRep = profile.role === 'representative' || isOwner;
-
-  // Role Guard: /admin strictly requires 'owner' or 'system_owner'
-  if (isAdminRoute && !isOwner) {
-    const forbiddenUrl = request.nextUrl.clone();
-    forbiddenUrl.pathname = '/rep'; // Redirect representative to their portal
-    return NextResponse.redirect(forbiddenUrl);
-  }
-
-  // Role Guard: /rep requires 'representative' or 'system_owner'
-  if (isRepRoute && !isRep) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = '/login';
-    loginUrl.searchParams.set('error', 'unauthorized_role');
-    return NextResponse.redirect(loginUrl);
+  if (decision.action === 'redirect') {
+    const targetUrl = request.nextUrl.clone();
+    targetUrl.pathname = decision.pathname;
+    targetUrl.search = '';
+    if (decision.redirectTo) {
+      targetUrl.searchParams.set('redirectTo', decision.redirectTo);
+    }
+    if (decision.error) {
+      targetUrl.searchParams.set('error', decision.error);
+    }
+    return NextResponse.redirect(targetUrl);
   }
 
   return response;

@@ -1,58 +1,148 @@
-// HU-ASMS: Student Registration Conversation (Phase 04)
+// HU-ASMS: Student Registration, Claim Verification & Account Recovery Conversation
+// Enforces zero pre-verification PII exposure and blocks unverified roster claims by HU ID alone.
 import { InlineKeyboard } from 'grammy';
 import type { BotConversation, BotContext } from '../types/context.js';
 import { StudentRegistrationService } from '../services/registration.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
+import { sanitizeHuStudentId, isValidHuStudentId } from '@hu-asms/validation';
 import { getStudentMainMenuKeyboard } from '../keyboards/main-menu.js';
-import { BOT_MESSAGES } from '@hu-asms/shared';
+import type { Department, AcademicYear, Section } from '@hu-asms/types';
+import { requirePrivateChat } from '../utils/chat-guard.js';
+
+interface CollectedAcademicProfile {
+  fullName: string;
+  selectedDept: Department;
+  selectedYear: AcademicYear;
+  selectedSec: Section;
+}
+
+async function collectAcademicProfile(
+  conversation: BotConversation,
+  ctx: BotContext,
+  registrationService: StudentRegistrationService
+): Promise<CollectedAcademicProfile | null> {
+  await ctx.reply('👤 Please enter your *Full Name* (as written on your University ID):', {
+    parse_mode: 'Markdown',
+  });
+  const nameMsg = await conversation.waitFor(':text');
+  const fullName = nameMsg.message?.text?.trim() || '';
+  if (fullName.length < 3) {
+    await ctx.reply('❌ Full Name is too short. Please run /start to begin again.');
+    return null;
+  }
+
+  const depts = await conversation.external(() => registrationService.getDepartments());
+  if (depts.length === 0) {
+    await ctx.reply('⚠️ System configuration incomplete: No departments found. Contact administrator.');
+    return null;
+  }
+
+  const deptKeyboard = new InlineKeyboard();
+  depts.forEach((d) => deptKeyboard.text(d.name, `reg_dept_${d.id}`).row());
+
+  await ctx.reply('🏢 Select your *Department*:', {
+    parse_mode: 'Markdown',
+    reply_markup: deptKeyboard,
+  });
+  const deptCallback = await conversation.waitForCallbackQuery(/^reg_dept_/);
+  const deptId = deptCallback.callbackQuery.data.replace('reg_dept_', '');
+  const selectedDept = depts.find((d) => d.id === deptId);
+  if (!selectedDept) {
+    await deptCallback.answerCallbackQuery({ text: 'Invalid department selection' });
+    await ctx.reply('❌ Invalid department selected. Please run /start again.');
+    return null;
+  }
+  await deptCallback.answerCallbackQuery({ text: `Selected ${selectedDept.name}` });
+
+  const years = await conversation.external(() => registrationService.getAcademicYears());
+  if (years.length === 0) {
+    await ctx.reply('⚠️ System configuration incomplete: No active academic years found.');
+    return null;
+  }
+
+  const yearKeyboard = new InlineKeyboard();
+  years.forEach((y) => yearKeyboard.text(y.name, `reg_year_${y.id}`).row());
+
+  await ctx.reply('📚 Select your *Academic Year*:', {
+    parse_mode: 'Markdown',
+    reply_markup: yearKeyboard,
+  });
+  const yearCallback = await conversation.waitForCallbackQuery(/^reg_year_/);
+  const yearId = yearCallback.callbackQuery.data.replace('reg_year_', '');
+  const selectedYear = years.find((y) => y.id === yearId);
+  if (!selectedYear) {
+    await yearCallback.answerCallbackQuery({ text: 'Invalid academic year selection' });
+    await ctx.reply('❌ Invalid academic year selected. Please run /start again.');
+    return null;
+  }
+  await yearCallback.answerCallbackQuery({ text: `Selected ${selectedYear.name}` });
+
+  const sections = await conversation.external(() =>
+    registrationService.getSectionsByYear(selectedYear.id)
+  );
+  if (sections.length === 0) {
+    await ctx.reply('⚠️ No sections configured for this academic year. Contact administrator.');
+    return null;
+  }
+
+  const secKeyboard = new InlineKeyboard();
+  sections.forEach((s) => secKeyboard.text(s.name, `reg_sec_${s.id}`).row());
+
+  await ctx.reply('🏫 Select your *Section*:', {
+    parse_mode: 'Markdown',
+    reply_markup: secKeyboard,
+  });
+  const secCallback = await conversation.waitForCallbackQuery(/^reg_sec_/);
+  const sectionId = secCallback.callbackQuery.data.replace('reg_sec_', '');
+  const selectedSec = sections.find((s) => s.id === sectionId);
+  if (!selectedSec) {
+    await secCallback.answerCallbackQuery({ text: 'Invalid section selection' });
+    await ctx.reply('❌ Invalid section selected. Please run /start again.');
+    return null;
+  }
+  await secCallback.answerCallbackQuery({ text: `Selected ${selectedSec.name}` });
+
+  return { fullName, selectedDept, selectedYear, selectedSec };
+}
 
 export async function registrationConversation(
   conversation: BotConversation,
   ctx: BotContext
 ): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'student registration and account verification'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
+  const telegramUsername = ctx.from?.username || null;
+
   if (!telegramUserId) {
-    await ctx.reply('Error: Unable to identify Telegram account.');
+    await ctx.reply('Error: Could not verify your Telegram account identity.');
     return;
   }
 
   const supabase = getSupabaseAdminClient();
   const registrationService = new StudentRegistrationService(supabase);
 
-  // 1. Initial Prompt for HU Student ID
-  await ctx.reply(
-    `🎓 *Haramaya University Academic Submission System*\n\n` +
-      `Please enter your official *HU Student ID* to proceed (e.g. \`HU/10294/14\` or \`HU-2024-001\`):`,
-    { parse_mode: 'Markdown' }
+  // 1. Block duplicate linking when Telegram account already has a registered or suspended student
+  const existingLinked = await conversation.external(() =>
+    registrationService.getStudentByTelegramId(telegramUserId)
   );
 
-  const idMsg = await conversation.waitFor(':text');
-  const rawId = idMsg.message?.text?.trim() || '';
+  if (existingLinked) {
+    if (existingLinked.registration_status === 'suspended') {
+      await ctx.reply(
+        `🚫 *Account Suspended*\n\n` +
+          `Your account (\`${existingLinked.hu_student_id}\`) is suspended.\n` +
+          `Please contact the System Owner / Academic Administrator.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
 
-  // 2. Lookup Identity
-  let lookupResult;
-  try {
-    lookupResult = await conversation.external(() =>
-      registrationService.lookupStudentIdentity(rawId, telegramUserId)
-    );
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    await ctx.reply(`❌ ${errorMsg}\n\nPlease send /start to try again.`);
-    return;
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCENARIO 1: Linked to current Telegram user
-  // ---------------------------------------------------------------------------
-  if (lookupResult.status === 'linked_to_current_user') {
-    const student = lookupResult.student!;
     await ctx.reply(
-      `👋 *Welcome back, ${student.full_name}!*\n\n` +
-        `HU Student ID: \`${student.hu_student_id}\`\n` +
-        `Department: *${student.department?.name || 'N/A'}*\n` +
-        `Academic Scope: *${student.academic_year?.name || 'N/A'} — ${student.section?.name || 'N/A'}*\n` +
-        `Status: *${student.registration_status.toUpperCase()} (Locked)*\n\n` +
-        `Select an option below to continue:`,
+      `👋 *Welcome back, ${existingLinked.full_name}!*\n` +
+        `Your account (\`${existingLinked.hu_student_id}\`) is already verified and locked.`,
       {
         parse_mode: 'Markdown',
         reply_markup: getStudentMainMenuKeyboard(),
@@ -61,237 +151,285 @@ export async function registrationConversation(
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // SCENARIO 2: Linked to another Telegram user (Protection against Identity Theft)
-  // ---------------------------------------------------------------------------
-  if (lookupResult.status === 'linked_to_another_user') {
-    const masked = lookupResult.maskedInfo!;
+  // 2. Check existing pending request owned by this Telegram user
+  const existingPending = await conversation.external(() =>
+    registrationService.getPendingRequestByTelegramId(telegramUserId)
+  );
+
+  if (existingPending) {
     await ctx.reply(
-      `⚠️ *Account Verification Alert*\n\n` +
-        `The Student ID \`${rawId.toUpperCase()}\` is already linked to another registered Telegram account.\n\n` +
-        `Registered Student: *${masked.maskedName}*\n` +
-        `Department: *${masked.departmentName}*\n\n` +
-        `🔒 *Security Notice:* To protect academic identity, students cannot claim existing student records without administrator verification.\n\n` +
-        `If this is your student ID and you changed your Telegram account or lost access, please contact your *System Owner* or *Section Representative* for account recovery.`,
+      `⏳ *Verification Request Already Pending*\n\n` +
+        `Your request for HU ID \`${existingPending.hu_student_id}\` is awaiting System Owner approval.\n` +
+        `You will receive a notification once reviewed.`,
       { parse_mode: 'Markdown' }
     );
     return;
   }
 
-  // ---------------------------------------------------------------------------
-  // SCENARIO 3: Pending Registration Request
-  // ---------------------------------------------------------------------------
-  if (lookupResult.status === 'pending_approval') {
-    await ctx.reply(
-      `⏳ *Registration Awaiting Verification*\n\n` +
-        `A registration request for Student ID \`${rawId.toUpperCase()}\` has already been submitted and is currently pending administrator verification.\n\n` +
-        `You will receive an automated notification as soon as the System Owner approves your registration.`,
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCENARIO 4: Account Suspended
-  // ---------------------------------------------------------------------------
-  if (lookupResult.status === 'suspended') {
-    await ctx.reply(
-      `⛔ *Account Suspended*\n\n` +
-        `Your academic account is currently suspended.\n` +
-        `Reason: _${lookupResult.student?.suspension_reason || 'Administrative restriction'}_\n\n` +
-        `Please contact your academic section representative or system owner.`,
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCENARIO 5: Exists in Pre-Approved Roster (Unlinked)
-  // ---------------------------------------------------------------------------
-  if (lookupResult.status === 'unlinked_roster_record') {
-    const student = lookupResult.student!;
-    const maskedName = registrationService.maskName(student.full_name);
-
-    const linkKeyboard = new InlineKeyboard()
-      .text('✅ Confirm & Bind Account', 'confirm_roster_bind')
-      .text('❌ Cancel', 'cancel_roster_bind');
-
-    await ctx.reply(
-      `🎓 *Official University Record Matched*\n\n` +
-        `HU Student ID: \`${student.hu_student_id}\`\n` +
-        `Student Name: *${maskedName}*\n` +
-        `Department: *${student.department?.name}*\n` +
-        `Academic Year: *${student.academic_year?.name}*\n` +
-        `Section: *${student.section?.name}*\n\n` +
-        `Please confirm that this is your university identity to bind this Telegram account permanently:`,
-      { parse_mode: 'Markdown', reply_markup: linkKeyboard }
-    );
-
-    const decision = await conversation.waitForCallbackQuery([
-      'confirm_roster_bind',
-      'cancel_roster_bind',
-    ]);
-
-    if (decision.callbackQuery.data === 'confirm_roster_bind') {
-      await conversation.external(() =>
-        registrationService.linkRosterStudentToTelegram(
-          student.id,
-          telegramUserId,
-          ctx.from?.username
-        )
-      );
-
-      await decision.answerCallbackQuery({ text: 'Account successfully bound!' });
-      await ctx.reply(
-        `🎉 *Account Successfully Linked and Locked!*\n\n` +
-          `Welcome, *${student.full_name}*! Your Telegram account is now permanently associated with your official HU identity.\n\n` +
-          `Use the menu below to navigate:`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: getStudentMainMenuKeyboard(),
-        }
-      );
-    } else {
-      await decision.answerCallbackQuery({ text: 'Binding cancelled.' });
-      await ctx.reply('Registration process cancelled.');
-    }
-    return;
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCENARIO 6: First-Time Registration Flow (Not found in Roster)
-  // ---------------------------------------------------------------------------
+  // 3. Prompt for HU Student ID
   await ctx.reply(
-    `📝 *First-Time Student Registration*\n\n` +
-      `Student ID \`${rawId.toUpperCase()}\` was not found on the active roster.\n` +
-      `Let's complete your initial registration for administrator approval.\n\n` +
-      `Please enter your *Full Name* (as documented on your official university ID card):`,
+    `🎓 *Welcome to Hawassa University Assignment Submission Bot*\n\n` +
+      `To verify or register your academic identity, please enter your official *HU Student ID*:\n` +
+      `*(Example: HU/10294/14 or HU-2024-001)*`,
     { parse_mode: 'Markdown' }
   );
 
-  const nameMsg = await conversation.waitFor(':text');
-  const fullName = nameMsg.message?.text?.trim() || '';
+  const idResponse = await conversation.waitFor(':text');
+  const rawId = idResponse.message?.text?.trim() || '';
+  const sanitizedId = sanitizeHuStudentId(rawId);
 
-  if (fullName.length < 3) {
-    await ctx.reply('❌ Full name is too short. Please run /start again.');
+  if (!isValidHuStudentId(sanitizedId)) {
+    await ctx.reply(
+      `❌ *Invalid Student ID Format*\n` +
+        `You entered: \`${rawId}\`\n\n` +
+        `Please run /start again and enter a valid HU Student ID (e.g., HU/10294/14).`,
+      { parse_mode: 'Markdown' }
+    );
     return;
   }
 
-  // Step A: Department Selection
-  const departments = await conversation.external(() =>
-    registrationService.getDepartments()
+  // 4. Perform privacy-preserving identity lookup (zero unverified PII returned)
+  const lookup = await conversation.external(() =>
+    registrationService.lookupStudentIdentity(sanitizedId, telegramUserId)
   );
-  if (departments.length === 0) {
-    await ctx.reply('System configuration error: No academic departments found. Contact administrator.');
+
+  if (lookup.status === 'suspended' && lookup.student) {
+    await ctx.reply(
+      `🚫 *Account Suspended*\n\nYour student account (\`${lookup.student.hu_student_id}\`) is currently suspended. Contact administration.`,
+      { parse_mode: 'Markdown' }
+    );
     return;
   }
 
-  const deptKeyboard = new InlineKeyboard();
-  departments.forEach((dept, i) => {
-    deptKeyboard.text(dept.name, `dept_${dept.id}`);
-    if ((i + 1) % 2 === 0) deptKeyboard.row();
-  });
-
-  await ctx.reply('Select your *Academic Department*:', {
-    parse_mode: 'Markdown',
-    reply_markup: deptKeyboard,
-  });
-
-  const deptCb = await conversation.waitForCallbackQuery(/^dept_/);
-  const selectedDeptId = deptCb.callbackQuery.data.replace('dept_', '');
-  const selectedDept = departments.find((d) => d.id === selectedDeptId);
-  await deptCb.answerCallbackQuery();
-
-  // Step B: Academic Year Selection
-  const years = await conversation.external(() =>
-    registrationService.getAcademicYears()
-  );
-  const yearKeyboard = new InlineKeyboard();
-  years.forEach((yr) => {
-    yearKeyboard.text(yr.name, `year_${yr.id}`).row();
-  });
-
-  await ctx.reply(`Department: *${selectedDept?.name}*\n\nSelect your *Academic Year*:`, {
-    parse_mode: 'Markdown',
-    reply_markup: yearKeyboard,
-  });
-
-  const yearCb = await conversation.waitForCallbackQuery(/^year_/);
-  const selectedYearId = yearCb.callbackQuery.data.replace('year_', '');
-  const selectedYear = years.find((y) => y.id === selectedYearId);
-  await yearCb.answerCallbackQuery();
-
-  // Step C: Section Selection
-  const sections = await conversation.external(() =>
-    registrationService.getSectionsByYear(selectedYearId)
-  );
-  if (sections.length === 0) {
-    await ctx.reply('No active sections configured for this academic year yet. Contact administrator.');
+  if (lookup.status === 'telegram_already_linked') {
+    await ctx.reply(
+      `⚠️ *Duplicate Account Linking Blocked*\n\nYour Telegram account is already linked to an existing student identity.`,
+      { parse_mode: 'Markdown' }
+    );
     return;
   }
 
-  const secKeyboard = new InlineKeyboard();
-  sections.forEach((sec) => {
-    secKeyboard.text(sec.name, `sec_${sec.id}`);
-  });
+  if (lookup.status === 'pending_approval') {
+    await ctx.reply(
+      `⏳ *Verification Pending*\n\nA registration or identity verification request involving \`${sanitizedId}\` is already under System Owner review.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // 5. Verified Claim or Lost-Account Recovery Path (NEVER exposes stored name/department/scope)
+  if (
+    lookup.status === 'unlinked_roster_verification_required' ||
+    lookup.status === 'linked_to_another_user'
+  ) {
+    const isRecovery = lookup.status === 'linked_to_another_user';
+    const requestType = isRecovery ? 'account_recovery' : 'roster_claim';
+
+    const actionKeyboard = new InlineKeyboard()
+      .text(
+        isRecovery ? '🔑 Enter Recovery Code' : '🔑 Enter Verification Code',
+        'verify_with_token'
+      )
+      .row()
+      .text(
+        isRecovery ? '📝 Request Admin Recovery' : '📝 Request Admin Verification',
+        'verify_with_admin'
+      )
+      .row()
+      .text('❌ Cancel', 'cancel_verification');
+
+    await ctx.reply(
+      isRecovery
+        ? `🔒 *Verification Required for Account Recovery*\n\n` +
+            `Student ID \`${sanitizedId}\` is currently associated with another Telegram account.\n` +
+            `To protect student privacy, no account details are shown here.\n\n` +
+            `If you lost access to your previous Telegram account, choose one of the verified options below:`
+        : `🔐 *Identity Verification Required*\n\n` +
+            `Knowing an HU Student ID alone is not sufficient to claim a university account.\n` +
+            `To verify your ownership of \`${sanitizedId}\`, enter a single-use System Owner verification code or submit an administrator-reviewed claim request:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: actionKeyboard,
+      }
+    );
+
+    const choice = await conversation.waitForCallbackQuery([
+      'verify_with_token',
+      'verify_with_admin',
+      'cancel_verification',
+    ]);
+
+    if (choice.callbackQuery.data === 'cancel_verification') {
+      await choice.answerCallbackQuery({ text: 'Cancelled' });
+      await ctx.reply('Verification cancelled. Run /start when ready.');
+      return;
+    }
+
+    if (choice.callbackQuery.data === 'verify_with_token') {
+      await choice.answerCallbackQuery({ text: 'Verification code selected' });
+      await ctx.reply(
+        `🔑 Enter the single-use *${isRecovery ? 'Recovery' : 'Verification'} Code* issued for \`${sanitizedId}\`:`,
+        { parse_mode: 'Markdown' }
+      );
+      const tokenMsg = await conversation.waitFor(':text');
+      const rawToken = tokenMsg.message?.text?.trim() || '';
+
+      try {
+        const verifiedStudent = await conversation.external(() =>
+          registrationService.redeemVerificationToken(
+            sanitizedId,
+            rawToken,
+            telegramUserId,
+            telegramUsername
+          )
+        );
+        await ctx.reply(
+          `✅ *Identity Verified & Account Locked!*\n\n` +
+            `Welcome, *${verifiedStudent.full_name}* (\`${verifiedStudent.hu_student_id}\`).\n` +
+            `You may now access your academic dashboard:`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: getStudentMainMenuKeyboard(),
+          }
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Verification failed.';
+        await ctx.reply(
+          `❌ *Verification Failed*\n\n${msg}\n\nRun /start to try again or request System Owner review.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+      return;
+    }
+
+    // Admin-reviewed claim / recovery workflow
+    await choice.answerCallbackQuery({ text: 'Admin verification selected' });
+    const profile = await collectAcademicProfile(conversation, ctx, registrationService);
+    if (!profile) return;
+
+    await ctx.reply(
+      isRecovery
+        ? `📄 Explain why you need *Telegram Account Recovery* (at least 10 characters, e.g., lost phone / new SIM):`
+        : `📄 Provide verification details for your *Roster Claim* (at least 10 characters):`,
+      { parse_mode: 'Markdown' }
+    );
+    const reasonMsg = await conversation.waitFor(':text');
+    const recoveryReason = reasonMsg.message?.text?.trim() || '';
+    if (recoveryReason.length < 10) {
+      await ctx.reply(
+        '❌ Explanation too short (minimum 10 characters). Please run /start to submit again.'
+      );
+      return;
+    }
+
+    const submitKeyboard = new InlineKeyboard()
+      .text('✅ Submit for Admin Review', 'confirm_claim_req')
+      .text('❌ Cancel', 'cancel_claim_req');
+
+    await ctx.reply(
+      `📋 *Confirm ${isRecovery ? 'Account Recovery' : 'Identity Claim'} Submission*\n\n` +
+        `• HU Student ID: \`${sanitizedId}\`\n` +
+        `• Full Name: *${profile.fullName}*\n` +
+        `• Department: *${profile.selectedDept.name}*\n` +
+        `• Academic Scope: *${profile.selectedYear.name} — ${profile.selectedSec.name}*\n\n` +
+        `The System Owner will verify your details before linking your Telegram account. Submit?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: submitKeyboard,
+      }
+    );
+
+    const submitDecision = await conversation.waitForCallbackQuery([
+      'confirm_claim_req',
+      'cancel_claim_req',
+    ]);
+
+    if (submitDecision.callbackQuery.data === 'confirm_claim_req') {
+      try {
+        await conversation.external(() =>
+          registrationService.submitVerifiedClaimOrRecoveryRequest({
+            hu_student_id: sanitizedId,
+            full_name: profile.fullName,
+            department_id: profile.selectedDept.id,
+            academic_year_id: profile.selectedYear.id,
+            section_id: profile.selectedSec.id,
+            telegram_user_id: telegramUserId,
+            telegram_username: telegramUsername,
+            request_type: requestType,
+            recovery_reason: recoveryReason,
+          })
+        );
+        await submitDecision.answerCallbackQuery({ text: 'Request submitted' });
+        await ctx.reply(
+          `⏳ *${isRecovery ? 'Account Recovery' : 'Identity Claim'} Request Submitted*\n\n` +
+            `Your request has been queued for System Owner verification.\n` +
+            `Your Telegram account will be linked once approved.`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Unable to submit request.';
+        await ctx.reply(`❌ ${msg}`);
+      }
+    } else {
+      await submitDecision.answerCallbackQuery({ text: 'Cancelled' });
+      await ctx.reply('Request cancelled. Run /start when ready.');
+    }
+    return;
+  }
+
+  // 6. Scenario: Not found -> Preserved First-Time Registration Workflow
+  await ctx.reply(
+    `📝 *New Student Registration*\n\n` +
+      `Your Student ID \`${sanitizedId}\` requires first-time registration.\n` +
+      `Please complete your official academic details for System Owner approval:`,
+    { parse_mode: 'Markdown' }
+  );
+
+  const profile = await collectAcademicProfile(conversation, ctx, registrationService);
+  if (!profile) return;
+
+  const confirmRegKeyboard = new InlineKeyboard()
+    .text('✅ Confirm & Submit Registration', 'confirm_reg')
+    .text('❌ Cancel', 'cancel_reg');
 
   await ctx.reply(
-    `Academic Year: *${selectedYear?.name}*\n\nSelect your *Section*:`,
-    { parse_mode: 'Markdown', reply_markup: secKeyboard }
+    `📋 *Review Your Registration Details*\n\n` +
+      `• *HU Student ID:* \`${sanitizedId}\`\n` +
+      `• *Full Name:* ${profile.fullName}\n` +
+      `• *Department:* ${profile.selectedDept.name}\n` +
+      `• *Academic Year:* ${profile.selectedYear.name}\n` +
+      `• *Section:* ${profile.selectedSec.name}\n\n` +
+      `⚠️ Once approved, your academic identity is *permanently locked*. Do you confirm these details?`,
+    { parse_mode: 'Markdown', reply_markup: confirmRegKeyboard }
   );
 
-  const secCb = await conversation.waitForCallbackQuery(/^sec_/);
-  const selectedSecId = secCb.callbackQuery.data.replace('sec_', '');
-  const selectedSec = sections.find((s) => s.id === selectedSecId);
-  await secCb.answerCallbackQuery();
-
-  // Step D: Registration Warning & Locking Disclosure
-  await ctx.reply(BOT_MESSAGES.REGISTRATION_WARNING, { parse_mode: 'Markdown' });
-
-  // Step E: Review and Confirmation Summary
-  const confirmKeyboard = new InlineKeyboard()
-    .text('✅ Confirm and Submit Registration', 'reg_confirm_submit')
-    .text('❌ Cancel', 'reg_cancel');
-
-  await ctx.reply(
-    `📋 *Please Review Your Information Carefully*\n\n` +
-      `HU Student ID: \`${rawId.toUpperCase()}\`\n` +
-      `Full Name: *${fullName}*\n` +
-      `Department: *${selectedDept?.name}*\n` +
-      `Academic Year: *${selectedYear?.name}*\n` +
-      `Section: *${selectedSec?.name}*\n` +
-      `Telegram Account ID: \`${telegramUserId}\`\n\n` +
-      `After submission, your identity will be verified against the university roster and locked.`,
-    { parse_mode: 'Markdown', reply_markup: confirmKeyboard }
-  );
-
-  const finalDecision = await conversation.waitForCallbackQuery([
-    'reg_confirm_submit',
-    'reg_cancel',
-  ]);
-
-  if (finalDecision.callbackQuery.data === 'reg_confirm_submit') {
+  const finalConfirm = await conversation.waitForCallbackQuery(['confirm_reg', 'cancel_reg']);
+  if (finalConfirm.callbackQuery.data === 'confirm_reg') {
     try {
       await conversation.external(() =>
         registrationService.submitFirstTimeRegistration({
-          hu_student_id: rawId,
-          full_name: fullName,
-          department_id: selectedDeptId,
-          academic_year_id: selectedYearId,
-          section_id: selectedSecId,
+          hu_student_id: sanitizedId,
+          full_name: profile.fullName,
+          department_id: profile.selectedDept.id,
+          academic_year_id: profile.selectedYear.id,
+          section_id: profile.selectedSec.id,
           telegram_user_id: telegramUserId,
-          telegram_username: ctx.from?.username,
+          telegram_username: telegramUsername,
         })
       );
 
-      await finalDecision.answerCallbackQuery({ text: 'Registration submitted!' });
-      await ctx.reply(BOT_MESSAGES.REGISTRATION_SUBMITTED, { parse_mode: 'Markdown' });
+      await finalConfirm.answerCallbackQuery({ text: 'Registration Submitted' });
+      await ctx.reply(
+        `⏳ *Registration Submitted for Approval*\n\n` +
+          `Your request for HU ID \`${sanitizedId}\` has been forwarded to the System Owner.\n` +
+          `You will be notified via this bot once approved.`
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`❌ Registration error: ${msg}`);
+      await ctx.reply(`❌ Failed to submit registration: ${msg}`);
     }
   } else {
-    await finalDecision.answerCallbackQuery({ text: 'Registration cancelled.' });
-    await ctx.reply('Registration cancelled. You can restart anytime using /start.');
+    await finalConfirm.answerCallbackQuery({ text: 'Cancelled' });
+    await ctx.reply('Registration cancelled. Run /start when ready.');
   }
 }

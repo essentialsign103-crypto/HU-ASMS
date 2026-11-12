@@ -1,7 +1,8 @@
 // HU-ASMS: Section Submissions & File Vault Viewer
 import React from 'react';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../../lib/auth/page-guards';
+import { getActiveAssignedSectionIds } from '../../../lib/auth/roles';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { DownloadButton } from './download-button';
@@ -10,15 +11,14 @@ import { formatDateUTC, formatFileSize } from '@hu-asms/shared';
 
 export default async function RepSubmissionsPage() {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
+  const context = await ensureRepresentativePage(supabase);
 
-  if (!context || !context.profile) {
-    return null;
-  }
+  const assignedSectionIds = getActiveAssignedSectionIds(context);
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-
-  const { data: submissions } = await supabase
+  const { data: submissions } =
+    assignedSectionIds.length === 0
+      ? { data: null }
+      : await supabase
     .from('submissions')
     .select(`
       *,

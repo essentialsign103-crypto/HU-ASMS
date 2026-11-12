@@ -12,7 +12,24 @@ import {
 import { executeCreateProjectGroup } from '../src/lib/rep/group-precreation-service.js';
 import type { UserSessionContext } from '../src/lib/auth/roles.js';
 
-function createRepContext(userId = 'rep-1'): UserSessionContext {
+const REP_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const REP_URL_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-bbbbbbbbbbbb';
+const REP_DELIV_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-cccccccccccc';
+const REP_GROUP_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-dddddddddddd';
+const SEC_A_UUID = '11111111-1111-4111-8111-111111111111';
+const PROJ_1_UUID = '22222222-2222-4222-8222-222222222222';
+const PROJ_MISSING_UUID = '22222222-2222-4222-8222-999999999999';
+const COURSE_1_UUID = '33333333-3333-4333-8333-333333333333';
+const YEAR_1_UUID = '44444444-4444-4444-8444-444444444444';
+const TEACHER_1_UUID = '55555555-5555-4555-8555-555555555555';
+const SUB_1_UUID = '66666666-6666-4666-8666-666666666666';
+const DELIV_1_UUID = '77777777-7777-4777-8777-777777777777';
+const GRP_1_UUID = '88888888-8888-4888-8888-888888888888';
+const STU_1_UUID = '99999999-9999-4999-8999-999999999991';
+const STU_2_UUID = '99999999-9999-4999-8999-999999999992';
+const FILE_1_UUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+function createRepContext(userId = REP_UUID): UserSessionContext {
   return {
     userId,
     profile: {
@@ -31,7 +48,7 @@ function createRepContext(userId = 'rep-1'): UserSessionContext {
       {
         id: 'asg-sec-a',
         profile_id: userId,
-        section_id: 'sec-a',
+        section_id: SEC_A_UUID,
         is_active: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -108,10 +125,18 @@ describe('Phase 14 — Scoped Audit Log RPC Routing', () => {
   it('executeDispatchDelivery, executeAcknowledgeDelivery, executePrepareDeliveryBatch, and executeCreateProjectGroup use RPC audit path', async () => {
     const rpcCalls: Array<{ fn: string; params: any }> = [];
     let directAuditInsertAttempted = false;
+    let deliveryStatus = 'prepared';
 
     const mockSupabase = {
       rpc: async (fn: string, params: any) => {
         rpcCalls.push({ fn, params });
+        if (fn === 'mark_delivery_sent_with_audit') {
+          deliveryStatus = 'sent';
+          return {
+            data: { delivery_id: params.p_delivery_id, status: 'sent', audit_id: 'audit-id' },
+            error: null,
+          };
+        }
         return { data: 'audit-id', error: null };
       },
       from: (table: string) => {
@@ -130,20 +155,38 @@ describe('Phase 14 — Scoped Audit Log RPC Routing', () => {
               in: () => chain,
               neq: () => chain,
               single: async () => {
+                if (table === 'sections') {
+                  return {
+                    data: { id: SEC_A_UUID, academic_year_id: YEAR_1_UUID },
+                    error: null,
+                  };
+                }
                 if (table === 'projects') {
                   return {
                     data: {
-                      id: 'proj-1',
-                      course_id: 'course-1',
+                      id: PROJ_1_UUID,
+                      course_id: COURSE_1_UUID,
+                      teacher_id: TEACHER_1_UUID,
                       title: 'P1',
+                      is_active: true,
                       submission_type: 'group',
                       file_rules: { min_group_size: 2, max_group_size: 4 },
+                      targets: [{ academic_year_id: YEAR_1_UUID, section_id: SEC_A_UUID }],
                     },
                     error: null,
                   };
                 }
+                if (table === 'teachers') {
+                  return {
+                    data: { id: TEACHER_1_UUID, is_active: true },
+                    error: null,
+                  };
+                }
                 if (table === 'deliveries') {
-                  return { data: { id: 'deliv-1', section_id: 'sec-a' }, error: null };
+                  return {
+                    data: { id: DELIV_1_UUID, section_id: SEC_A_UUID, status: deliveryStatus },
+                    error: null,
+                  };
                 }
                 return { data: null, error: null };
               },
@@ -151,15 +194,15 @@ describe('Phase 14 — Scoped Audit Log RPC Routing', () => {
               then: (resolve: any) => {
                 if (table === 'submissions') {
                   return resolve({
-                    data: [{ id: 'sub-1', section_id: 'sec-a', project_id: 'proj-1', status: 'submitted' }],
+                    data: [{ id: SUB_1_UUID, section_id: SEC_A_UUID, project_id: PROJ_1_UUID, status: 'active' }],
                     error: null,
                   });
                 }
                 if (table === 'students') {
                   return resolve({
                     data: [
-                      { id: 'stu-1', section_id: 'sec-a', registration_status: 'active', full_name: 'Stu 1' },
-                      { id: 'stu-2', section_id: 'sec-a', registration_status: 'active', full_name: 'Stu 2' },
+                      { id: STU_1_UUID, section_id: SEC_A_UUID, registration_status: 'approved', full_name: 'Stu 1' },
+                      { id: STU_2_UUID, section_id: SEC_A_UUID, registration_status: 'approved', full_name: 'Stu 2' },
                     ],
                     error: null,
                   });
@@ -175,52 +218,64 @@ describe('Phase 14 — Scoped Audit Log RPC Routing', () => {
           insert: (payload: any) => ({
             select: () => ({
               single: async () => {
-                if (table === 'deliveries') return { data: { id: 'deliv-1', ...payload }, error: null };
-                if (table === 'groups') return { data: { id: 'grp-1', ...payload }, error: null };
+                if (table === 'deliveries') return { data: { id: DELIV_1_UUID, ...payload }, error: null };
+                if (table === 'groups') return { data: { id: GRP_1_UUID, ...payload }, error: null };
                 return { data: { id: 'row-1' }, error: null };
               },
             }),
             then: (resolve: any) => resolve({ error: null }),
           }),
-          update: () => ({
+          update: (payload: any) => ({
+            eq: () => ({
+              eq: () => ({
+                select: async () => {
+                  if (table === 'deliveries' && typeof payload?.status === 'string') {
+                    deliveryStatus = payload.status;
+                  }
+                  return { data: [{ id: DELIV_1_UUID }], error: null };
+                },
+              }),
+            }),
+          }),
+          delete: () => ({
             eq: async () => ({ error: null }),
           }),
         };
       },
     } as any;
 
-    const ctx = createRepContext('rep-rpc-test');
+    const ctx = createRepContext(REP_UUID);
 
     const prep = await executePrepareDeliveryBatch(mockSupabase, ctx, {
-      sectionId: 'sec-a',
-      projectId: 'proj-1',
-      teacherId: 'teacher-1',
+      sectionId: SEC_A_UUID,
+      projectId: PROJ_1_UUID,
+      teacherId: TEACHER_1_UUID,
       channel: 'email',
-      submissionIds: ['sub-1'],
+      submissionIds: [SUB_1_UUID],
     });
     assert.equal(prep.success, true);
 
-    const disp = await executeDispatchDelivery(mockSupabase, ctx, 'deliv-1', 'Sent');
+    const disp = await executeDispatchDelivery(mockSupabase, ctx, DELIV_1_UUID, 'Sent');
     assert.equal(disp.success, true);
 
-    const ack = await executeAcknowledgeDelivery(mockSupabase, ctx, 'deliv-1');
+    const ack = await executeAcknowledgeDelivery(mockSupabase, ctx, DELIV_1_UUID);
     assert.equal(ack.success, true);
 
     const grp = await executeCreateProjectGroup(mockSupabase, ctx, {
-      sectionId: 'sec-a',
-      projectId: 'proj-1',
+      sectionId: SEC_A_UUID,
+      projectId: PROJ_1_UUID,
       groupCode: 'G-99',
-      leaderStudentId: 'stu-1',
-      memberStudentIds: ['stu-1', 'stu-2'],
+      leaderStudentId: STU_1_UUID,
+      memberStudentIds: [STU_1_UUID, STU_2_UUID],
     });
     assert.equal(grp.success, true);
 
     assert.equal(directAuditInsertAttempted, false);
     assert.deepEqual(
-      rpcCalls.map((c) => c.params.p_action),
+      rpcCalls.map((c) => (c.fn === 'mark_delivery_sent_with_audit' ? c.fn : c.params.p_action)),
       [
         'TEACHER_DELIVERY_PREPARED',
-        'TEACHER_DELIVERY_DISPATCHED',
+        'mark_delivery_sent_with_audit',
         'TEACHER_DELIVERY_ACKNOWLEDGED',
         'GROUP_PRECREATED',
       ]
@@ -239,9 +294,9 @@ describe('Phase 14 — Web Service Runtime Rate-Limit Enforcement', () => {
           eq: () => ({
             single: async () => ({
               data: {
-                id: 'file-1',
+                id: FILE_1_UUID,
                 storage_path: 'sec-a/sub-1/report.pdf',
-                submission: { section_id: 'sec-a' },
+                submission: { section_id: SEC_A_UUID },
               },
               error: null,
             }),
@@ -258,47 +313,50 @@ describe('Phase 14 — Web Service Runtime Rate-Limit Enforcement', () => {
       },
     } as any;
 
-    const ctx = createRepContext('rep-rl-url');
+    const ctx = createRepContext(REP_URL_UUID);
     for (let i = 0; i < 30; i++) {
-      const res = await executeGetSubmissionFileDownloadUrl(supabase, ctx, 'file-1');
+      const res = await executeGetSubmissionFileDownloadUrl(supabase, ctx, FILE_1_UUID);
       assert.equal(res.signedUrl, 'https://storage.local/signed?token=abc');
     }
 
-    const blocked = await executeGetSubmissionFileDownloadUrl(supabase, ctx, 'file-1');
+    const blocked = await executeGetSubmissionFileDownloadUrl(supabase, ctx, FILE_1_UUID);
     assert.equal(blocked.signedUrl, undefined);
     assert.match(blocked.error || '', /Too many requests: Rate limit for file download URL generation exceeded/);
   });
 
   it('executePrepareDeliveryBatch enforces per-user rate limit after 20 requests', async () => {
     const supabase = {
-      from: () => ({
+      from: (table: string) => ({
         select: () => ({
           eq: () => ({
-            single: async () => ({ data: null, error: { message: 'Not found' } }),
+            single: async () =>
+              table === 'sections'
+                ? { data: { id: SEC_A_UUID, academic_year_id: YEAR_1_UUID }, error: null }
+                : { data: null, error: { message: 'Not found' } },
           }),
         }),
       }),
     } as any;
 
-    const ctx = createRepContext('rep-rl-delivery');
+    const ctx = createRepContext(REP_DELIV_UUID);
     for (let i = 0; i < 20; i++) {
       const res = await executePrepareDeliveryBatch(supabase, ctx, {
-        sectionId: 'sec-a',
-        projectId: 'proj-missing',
-        teacherId: 'teacher-1',
+        sectionId: SEC_A_UUID,
+        projectId: PROJ_MISSING_UUID,
+        teacherId: TEACHER_1_UUID,
         channel: 'email',
-        submissionIds: ['sub-1'],
+        submissionIds: [SUB_1_UUID],
       });
       assert.equal(res.success, false);
       assert.equal(res.error, 'Academic project record not found.');
     }
 
     const blocked = await executePrepareDeliveryBatch(supabase, ctx, {
-      sectionId: 'sec-a',
-      projectId: 'proj-missing',
-      teacherId: 'teacher-1',
+      sectionId: SEC_A_UUID,
+      projectId: PROJ_MISSING_UUID,
+      teacherId: TEACHER_1_UUID,
       channel: 'email',
-      submissionIds: ['sub-1'],
+      submissionIds: [SUB_1_UUID],
     });
     assert.equal(blocked.success, false);
     assert.match(blocked.error || '', /Too many requests: Rate limit for delivery batch operations exceeded/);
@@ -306,34 +364,37 @@ describe('Phase 14 — Web Service Runtime Rate-Limit Enforcement', () => {
 
   it('executeCreateProjectGroup enforces per-user rate limit after 20 requests', async () => {
     const supabase = {
-      from: () => ({
+      from: (table: string) => ({
         select: () => ({
           eq: () => ({
-            single: async () => ({ data: null, error: { message: 'Not found' } }),
+            single: async () =>
+              table === 'sections'
+                ? { data: { id: SEC_A_UUID, academic_year_id: YEAR_1_UUID }, error: null }
+                : { data: null, error: { message: 'Not found' } },
           }),
         }),
       }),
     } as any;
 
-    const ctx = createRepContext('rep-rl-group');
+    const ctx = createRepContext(REP_GROUP_UUID);
     for (let i = 0; i < 20; i++) {
       const res = await executeCreateProjectGroup(supabase, ctx, {
-        sectionId: 'sec-a',
-        projectId: 'proj-missing',
+        sectionId: SEC_A_UUID,
+        projectId: PROJ_MISSING_UUID,
         groupCode: 'G-1',
-        leaderStudentId: 's1',
-        memberStudentIds: ['s1'],
+        leaderStudentId: STU_1_UUID,
+        memberStudentIds: [STU_1_UUID],
       });
       assert.equal(res.success, false);
       assert.equal(res.error, 'Project record not found.');
     }
 
     const blocked = await executeCreateProjectGroup(supabase, ctx, {
-      sectionId: 'sec-a',
-      projectId: 'proj-missing',
+      sectionId: SEC_A_UUID,
+      projectId: PROJ_MISSING_UUID,
       groupCode: 'G-1',
-      leaderStudentId: 's1',
-      memberStudentIds: ['s1'],
+      leaderStudentId: STU_1_UUID,
+      memberStudentIds: [STU_1_UUID],
     });
     assert.equal(blocked.success, false);
     assert.match(blocked.error || '', /Too many requests: Rate limit for project group creation exceeded/);

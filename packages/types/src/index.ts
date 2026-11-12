@@ -91,6 +91,11 @@ export interface Student {
   section?: Section;
 }
 
+export type RegistrationRequestType =
+  | 'new_registration'
+  | 'roster_claim'
+  | 'account_recovery';
+
 export interface RegistrationRequest {
   id: string;
   hu_student_id: string;
@@ -100,12 +105,27 @@ export interface RegistrationRequest {
   section_id: string;
   telegram_user_id: number;
   telegram_username?: string | null;
+  request_type?: RegistrationRequestType;
+  target_student_id?: string | null;
+  recovery_reason?: string | null;
   status: RequestStatus;
   admin_notes?: string | null;
   reviewed_by?: string | null;
   reviewed_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface StudentVerificationToken {
+  id: string;
+  student_id: string;
+  token_hash: string;
+  purpose: 'roster_claim' | 'account_recovery';
+  issued_by?: string | null;
+  expires_at: string;
+  used_at?: string | null;
+  used_by_telegram_id?: number | null;
+  created_at: string;
 }
 
 export interface IdentityChangeRequest {

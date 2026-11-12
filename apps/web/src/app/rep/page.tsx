@@ -2,20 +2,30 @@
 import React from 'react';
 import Link from 'next/link';
 import { createServerSupabaseClient } from '../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../lib/auth/page-guards';
+import { getActiveAssignedSectionIds } from '../../lib/auth/roles';
 import { Card } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Users, FileCheck2, UsersRound, ArrowRight } from 'lucide-react';
 
 export default async function RepOverviewPage() {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
+  const context = await ensureRepresentativePage(supabase);
 
-  if (!context || !context.profile) {
-    return null;
+  const assignedSectionIds = getActiveAssignedSectionIds(context);
+
+  if (assignedSectionIds.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
+          <h1 className="text-lg font-semibold">No Active Section Assignments</h1>
+          <p className="mt-2 text-sm text-amber-800">
+            Your representative account is active, but no active academic section assignments are currently linked to your profile. Contact the System Owner to assign your section scope.
+          </p>
+        </div>
+      </div>
+    );
   }
-
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
 
   // Parallel fetch section-scoped data
   const [

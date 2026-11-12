@@ -1,7 +1,12 @@
 // HU-ASMS: Representative Section Compliance Reports
 import React from 'react';
+import { isValidUuid } from '@hu-asms/validation';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import {
+  resolveAuthorizedSectionScope,
+  resolveUserSessionContext,
+} from '../../../lib/auth/roles';
+import { ScopeAccessError } from '../../../components/rep/scope-access-error';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { BarChart3, AlertCircle, FileCheck2, UserX } from 'lucide-react';
@@ -16,12 +21,26 @@ export default async function RepReportsPage({
   const supabase = await createServerSupabaseClient();
   const context = await resolveUserSessionContext(supabase);
 
-  if (!context || !context.profile) {
-    return null;
+  const scope = resolveAuthorizedSectionScope(context, params.sectionId);
+  if (!scope.authorized || !context || !context.profile) {
+    return (
+      <ScopeAccessError
+        status={scope.authorized ? 403 : scope.status}
+        message={
+          scope.authorized
+            ? 'Active representative session required to view reports.'
+            : scope.error
+        }
+      />
+    );
   }
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-  const selectedSectionId = params.sectionId || assignedSectionIds[0];
+  const requestedProjectId = params.projectId?.trim();
+  if (requestedProjectId !== undefined && requestedProjectId !== '' && !isValidUuid(requestedProjectId)) {
+    return <ScopeAccessError status={400} message="Invalid project identifier." />;
+  }
+
+  const selectedSectionId = scope.sectionId;
 
   // Fetch projects targeted to assigned sections
   const { data: projects } = await supabase
@@ -40,7 +59,16 @@ export default async function RepReportsPage({
     p.targets?.some((t: any) => !t.section_id || t.section_id === selectedSectionId)
   );
 
-  const selectedProjectId = params.projectId || sectionProjects[0]?.id;
+  if (requestedProjectId && !sectionProjects.some((p) => p.id === requestedProjectId)) {
+    return (
+      <ScopeAccessError
+        status={403}
+        message="Forbidden: Requested project is not targeted to the selected section."
+      />
+    );
+  }
+
+  const selectedProjectId = requestedProjectId || sectionProjects[0]?.id;
   const currentProject = sectionProjects.find((p) => p.id === selectedProjectId);
 
   // Fetch submissions and students for selected section & project

@@ -4,6 +4,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
+import { resolvePostLoginPath } from '../../../lib/auth/role-policy';
 import { Button } from '../../../components/ui/button';
 import { ShieldCheck, AlertCircle } from 'lucide-react';
 
@@ -33,20 +34,36 @@ export default function LoginPage() {
       }
 
       if (data.user) {
-        // Query profile role
-        const { data: profile } = await supabase
+        // Query profile role and active flag using canonical portal roles
+        const { data: profile, error: profileError } = await supabase
           .from('profiles')
-          .select('role')
+          .select('role, is_active')
           .eq('id', data.user.id)
           .maybeSingle();
 
-        if (profile?.role === 'owner') {
-          router.push('/admin');
-        } else if (profile?.role === 'representative') {
-          router.push('/rep');
-        } else {
-          router.push('/');
+        if (profileError) {
+          await supabase.auth.signOut();
+          setErrorMessage('Unable to verify your portal profile. Please try again.');
+          setIsLoading(false);
+          return;
         }
+
+        if (!profile || !profile.is_active) {
+          await supabase.auth.signOut();
+          setErrorMessage('Your account is inactive or lacks portal access.');
+          setIsLoading(false);
+          return;
+        }
+
+        const redirectPath = resolvePostLoginPath(profile.role);
+        if (!redirectPath) {
+          await supabase.auth.signOut();
+          setErrorMessage('Your account role does not have portal access.');
+          setIsLoading(false);
+          return;
+        }
+
+        router.push(redirectPath);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'An unexpected error occurred during sign in.');

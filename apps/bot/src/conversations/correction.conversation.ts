@@ -3,11 +3,16 @@ import { InlineKeyboard } from 'grammy';
 import type { BotConversation, BotContext } from '../types/context.js';
 import { StudentRegistrationService } from '../services/registration.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
+import { requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function correctionConversation(
   conversation: BotConversation,
   ctx: BotContext
 ): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'identity correction requests'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) {
     await ctx.reply('Error: Telegram account cannot be identified.');

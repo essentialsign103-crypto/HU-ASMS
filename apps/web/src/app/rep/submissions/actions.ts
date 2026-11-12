@@ -3,7 +3,8 @@
 
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
 import { resolveUserSessionContext } from '../../../lib/auth/roles';
-import { assertRateLimit } from '../../../lib/security/rate-limiter';
+import { assertDistributedRateLimit } from '../../../lib/security/rate-limiter';
+import { validateUuidIdentifier } from '../../../lib/rep/input-validation';
 import {
   executeGetSubmissionFileDownloadUrl,
   type SignedUrlResult,
@@ -21,8 +22,13 @@ export async function getSubmissionFileDownloadUrl(
     const supabase = await createServerSupabaseClient();
     const context = await resolveUserSessionContext(supabase);
     if (!context || !context.profile) {
-      assertRateLimit('signed-url:unauth', 15, 60000, 'file download URL generation');
+      await assertDistributedRateLimit('web:signed-url:unauth', 15, 60000, 'file download URL generation');
       return { error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:signed-url:${context.userId}`, 30, 60000, 'file download URL generation');
+    const uuidError = validateUuidIdentifier(submissionFileId, 'submission file');
+    if (uuidError) {
+      return { error: uuidError };
     }
     return executeGetSubmissionFileDownloadUrl(supabase, context, submissionFileId);
   } catch (err: any) {

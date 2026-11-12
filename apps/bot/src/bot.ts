@@ -1,5 +1,5 @@
 // HU-ASMS: Telegram Bot Core Setup (grammY)
-import { Bot, session } from 'grammy';
+import { Bot, session, type StorageAdapter } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 import { conversations, createConversation } from '@grammyjs/conversations';
 import type { BotContext, SessionData } from './types/context.js';
@@ -7,6 +7,10 @@ import {
   createRateLimiterMiddleware,
   type RateLimitOptions,
 } from './middleware/rate-limit.middleware.js';
+import {
+  PersistentMemorySessionStorage,
+  SupabaseSessionStorage,
+} from './storage/supabase-session-storage.js';
 import { sanitizeLogData } from './utils/error-handler.js';
 import { registrationConversation } from './conversations/registration.conversation.js';
 import { correctionConversation } from './conversations/correction.conversation.js';
@@ -34,10 +38,53 @@ import {
 } from './handlers/group.handler.js';
 import { RepresentativeService } from './services/representative.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
+import { requirePrivateChat } from './utils/chat-guard.js';
+
+/**
+ * Isolates grammY session & conversation state per user even inside shared group chats.
+ * In private chats (`chat.id === from.id`), returns the single Telegram user ID key.
+ */
+export function resolveBotSessionKey(ctx: {
+  chat?: { id?: number };
+  from?: { id?: number };
+}): string | undefined {
+  const chatId = ctx.chat?.id;
+  const userId = ctx.from?.id;
+  if (chatId !== undefined && userId !== undefined) {
+    return chatId === userId ? String(userId) : `${chatId}:${userId}`;
+  }
+  if (userId !== undefined) return String(userId);
+  if (chatId !== undefined) return String(chatId);
+  return undefined;
+}
 
 export interface CreateBotOptions {
   rateLimit?: Partial<RateLimitOptions>;
   botInfo?: UserFromGetMe;
+  sessionStorage?: StorageAdapter<SessionData>;
+}
+
+function resolveSessionStorage(
+  explicitStorage?: StorageAdapter<SessionData>
+): StorageAdapter<SessionData> {
+  if (explicitStorage) {
+    return explicitStorage;
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (supabaseUrl && serviceRoleKey) {
+    return new SupabaseSessionStorage(getSupabaseAdminClient());
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'Persistent Supabase session storage is required in production. Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    );
+  }
+
+  return new PersistentMemorySessionStorage();
 }
 
 export function createBot(token?: string, options?: CreateBotOptions): Bot<BotContext> {
@@ -51,7 +98,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     options?.botInfo ? { botInfo: options.botInfo } : undefined
   );
 
-  // 0. Rate Limiting Middleware (protects against command flooding and upload abuse)
+  // 0. Rate Limiting Middleware (distributed Postgres sliding window in production)
   bot.use(
     createRateLimiterMiddleware({
       windowMs: 10000,
@@ -60,10 +107,13 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     })
   );
 
-  // 1. Session Middleware
+  // 1. Persistent Session Middleware (stores session + @grammyjs/conversations replay state)
+  const sessionStorage = resolveSessionStorage(options?.sessionStorage);
   bot.use(
     session({
       initial: (): SessionData => ({}),
+      storage: sessionStorage,
+      getSessionKey: (ctx) => resolveBotSessionKey(ctx),
     })
   );
 
@@ -80,9 +130,11 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   bot.command('correction', handleCorrectionCommand);
   bot.command('help', handleHelpCommand);
   bot.command('submit', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'assignment submission'))) return;
     await ctx.conversation.enter('individualSubmissionConversation');
   });
   bot.command('submit_group', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'group submission'))) return;
     await ctx.conversation.enter('groupSubmissionConversation');
   });
   bot.command('reports', handleSubmissionReports);
@@ -94,9 +146,11 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   bot.hears(['👥 My Groups', '👥 View Groups'], handleMyGroups);
   bot.command('groups', handleMyGroups);
   bot.hears('📤 Submit Assignment', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'assignment submission'))) return;
     await ctx.conversation.enter('individualSubmissionConversation');
   });
   bot.hears(['🚀 Submit Group Project', '👥 Submit Group Assignment'], async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'group submission'))) return;
     await ctx.conversation.enter('groupSubmissionConversation');
   });
 

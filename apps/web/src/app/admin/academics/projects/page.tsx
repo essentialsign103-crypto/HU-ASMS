@@ -1,13 +1,19 @@
 // HU-ASMS: Project Studio & Multi-Scope Targeting Management
 import React from 'react';
 import { createServerSupabaseClient } from '../../../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../../../lib/auth/page-guards';
 import { Card } from '../../../../components/ui/card';
 import { Badge } from '../../../../components/ui/badge';
 import { FolderGit2, Calendar, FileCode, Users } from 'lucide-react';
-import { formatDateUTC, formatFileSize } from '@hu-asms/shared';
+import {
+  formatDateUTC,
+  formatFileSize,
+  resolveEffectiveTelegramMaxFileSizeBytes,
+} from '@hu-asms/shared';
 
 export default async function ProjectStudioPage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   const { data: projects } = await supabase
     .from('projects')
@@ -87,7 +93,7 @@ export default async function ProjectStudioPage() {
                   </div>
                   <div className="p-2.5 bg-slate-50 rounded border border-slate-200/60 space-y-1 text-slate-600">
                     <div>Allowed: <code className="text-green-700 font-bold">{rules?.allowed_extensions?.join(', ') || 'pdf'}</code></div>
-                    <div>Max Size: <span className="font-semibold">{rules?.max_file_size_bytes ? formatFileSize(rules.max_file_size_bytes) : '20 MB'}</span></div>
+                    <div>Max Size: <span className="font-semibold">{formatFileSize(resolveEffectiveTelegramMaxFileSizeBytes(rules?.max_file_size_bytes))}</span></div>
                     <div>Resubmissions: <span className="font-semibold">{proj.resubmission_allowed ? 'Allowed (Versioned)' : 'Disabled'}</span></div>
                   </div>
                 </div>

@@ -12,24 +12,37 @@ The **Administrative Web Dashboard** (`apps/web`) provides a centralized, secure
 
 ```mermaid
 flowchart TD
-    UserReq[HTTP Request] --> EdgeMiddleware[Next.js Edge Middleware]
-    EdgeMiddleware --> CheckSession{Valid Supabase Auth Session?}
-    
-    CheckSession -- No --> RedirectLogin[Redirect to /login]
-    CheckSession -- Yes --> QueryProfile[Fetch User Profile & Role from DB]
-    
-    QueryProfile --> CheckRole{Route Target}
-    
-    CheckRole -- /admin/* --> OwnerCheck{profile.role == 'owner'?}
-    OwnerCheck -- Yes --> AllowAdmin[Grant Access to /admin]
-    OwnerCheck -- No --> RedirectRep[Redirect to /rep]
-    
-    CheckRole -- /rep/* --> RepCheck{profile.role IN ('representative', 'owner')?}
-    RepCheck -- Yes --> AllowRep[Grant Access to /rep]
-    RepCheck -- No --> Deny[Redirect to /login?error=unauthorized_role]
+    UserReq["HTTP Request (/admin/* or /rep/*)"] --> ConfigCheck{"Supabase Auth Config Present?"}
+    ConfigCheck -- No --> FailClosed503["Fail Closed: HTTP 503"]
+    ConfigCheck -- Yes --> EdgeMiddleware["Next.js Edge Middleware (evaluateRouteGuard)"]
+    EdgeMiddleware --> CheckSession{"Valid Supabase Auth Session?"}
+
+    CheckSession -- No (GET) --> RedirectLogin["Redirect to /login?redirectTo=..."]
+    CheckSession -- No (Mutation / Server Action) --> Deny401["Deny: HTTP 401"]
+    CheckSession -- Yes --> QueryProfile["Fetch User Profile & is_active from DB"]
+
+    QueryProfile -- Profile Query Error --> FailClosedAuth["GET: /login?error=auth_verification_failed | Mutation: HTTP 503"]
+    QueryProfile -- Missing or Inactive --> DenyInactive["GET: /login?error=inactive_account | Mutation: HTTP 403"]
+    QueryProfile -- Active Profile --> CheckRole{"Route Target"}
+
+    CheckRole -- /admin/* --> OwnerCheck{"profile.role == 'system_owner'?"}
+    OwnerCheck -- Yes --> AllowAdmin["Grant Access to /admin"]
+    OwnerCheck -- No & Representative --> RedirectRep["GET: Redirect to /rep | Mutation: HTTP 403"]
+    OwnerCheck -- No & Other Role --> DenyOwner["GET: /login?error=unauthorized_role | Mutation: HTTP 403"]
+
+    CheckRole -- /rep/* --> RepCheck{"profile.role IN ('representative', 'system_owner')?"}
+    RepCheck -- Yes --> AllowRep["Grant Access to /rep"]
+    RepCheck -- No --> DenyRep["GET: /login?error=unauthorized_role | Mutation: HTTP 403"]
 ```
 
-### 2.1 Secret Hygiene & Client Protection
+### 2.1 Canonical Role Model & Fail-Closed Guards
+- **Canonical Database Roles**: Only `'system_owner'` and `'representative'` grant administrative portal access. Legacy `'owner'` values are rejected (`isSystemOwnerRole`, `isRepresentativeRole`, and `resolvePostLoginPath` in `apps/web/src/lib/auth/role-policy.ts`).
+- **Active Account & Assignment Enforcement**: Profiles must have `is_active = true`, and representative section scope requires active `representative_assignments` rows (`auth_is_rep_for_section` / `auth_get_assigned_section_ids` in Supabase RLS and `resolveUserSessionContext` / `getActiveAssignedSectionIds` / direct `is_active === true` verification inside `assertSystemOwner`, `assertRepresentativeSectionScope`, and `resolveAuthorizedSectionScope`).
+- **Fail-Closed Edge Middleware**: `evaluateRouteGuard` (`apps/web/src/lib/auth/middleware-guard.ts`) fails closed on missing Supabase configuration (`503`), profile query failures, inactive profiles, and unauthenticated or unauthorized mutations/Next.js Server Actions (`401`/`403`/`503`).
+- **Defense-in-Depth Page & Service Guards**: Server Components call `ensureSystemOwnerPage` (`/admin/*`) or `ensureRepresentativePage` (`/rep/*`), and administrative mutation services (`executeApproveRegistration`, `executeRejectRegistration`, `executeGetSubmissionFileDownloadUrl`, `executeGetDeliveryPackageManifest`) enforce server-side role/scope assertions, UUID validation, relation integrity checks, and rate limiting.
+- **Documented Follow-Up Architecture Proposals**: See `docs/SECURITY_AND_HARDENING.md` Section 5 (shared distributed rate limiter replacement for process-local `globalWebRateLimiter`) and Section 6 (atomic PostgreSQL `approve_student_registration` RPC proposal replacing the current two-write approval sequence).
+
+### 2.2 Secret Hygiene & Client Protection
 - **No Service Role Keys in Client Code**: Client components and browser utilities strictly consume `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 - `SUPABASE_SERVICE_ROLE_KEY` and `TELEGRAM_BOT_TOKEN` are never imported, bundled, or exposed to the browser (enforced and verified by automated static analysis in `apps/web/test/secret-hygiene.test.ts`).
 - Server components and server actions pass authenticated user session cookies to Supabase, guaranteeing that PostgreSQL Row Level Security (RLS) policies enforce database-level authorization on all queries.

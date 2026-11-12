@@ -1,25 +1,25 @@
 // HU-ASMS: Section Representative Student Roster
 import React from 'react';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
-import { resolveUserSessionContext } from '../../../lib/auth/roles';
+import { ensureRepresentativePage } from '../../../lib/auth/page-guards';
+import { getActiveAssignedSectionIds } from '../../../lib/auth/roles';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 
 export default async function RepStudentsPage() {
   const supabase = await createServerSupabaseClient();
-  const context = await resolveUserSessionContext(supabase);
+  const context = await ensureRepresentativePage(supabase);
 
-  if (!context || !context.profile) {
-    return null;
-  }
+  const assignedSectionIds = getActiveAssignedSectionIds(context);
 
-  const assignedSectionIds = context.assignments.map((a) => a.section_id);
-
-  const { data: students } = await supabase
-    .from('students')
-    .select('*, department:departments(*), academic_year:academic_years(*), section:sections(*)')
-    .in('section_id', assignedSectionIds)
-    .order('full_name', { ascending: true });
+  const { data: students } =
+    assignedSectionIds.length === 0
+      ? { data: null }
+      : await supabase
+          .from('students')
+          .select('*, department:departments(*), academic_year:academic_years(*), section:sections(*)')
+          .in('section_id', assignedSectionIds)
+          .order('full_name', { ascending: true });
 
   return (
     <div className="space-y-8">

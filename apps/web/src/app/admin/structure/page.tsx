@@ -1,12 +1,14 @@
 // HU-ASMS: University Structure Management (Departments, Years, Sections)
 import React from 'react';
 import { createServerSupabaseClient } from '../../../lib/supabase/server';
+import { ensureSystemOwnerPage } from '../../../lib/auth/page-guards';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { Building, Calendar, Layers } from 'lucide-react';
 
 export default async function UniversityStructurePage() {
   const supabase = await createServerSupabaseClient();
+  await ensureSystemOwnerPage(supabase);
 
   const [
     { data: departments },

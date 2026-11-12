@@ -1,8 +1,13 @@
 // HU-ASMS: Student Academic Profile Command (Phase 04)
 import type { BotContext } from '../types/context.js';
 import { getSupabaseAdminClient, DatabaseService } from '@hu-asms/database';
+import { requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function handleProfileCommand(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'student profile lookup'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) {
     await ctx.reply('Error: Could not identify your Telegram account.');
