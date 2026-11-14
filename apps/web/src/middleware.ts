@@ -26,6 +26,16 @@ export async function middleware(request: NextRequest) {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
+    const missing = [
+      !supabaseUrl ? 'NEXT_PUBLIC_SUPABASE_URL' : null,
+      !supabaseAnonKey ? 'NEXT_PUBLIC_SUPABASE_ANON_KEY' : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    console.error(
+      `[HU-ASMS] Middleware: missing environment variable(s): ${missing}. ` +
+        'Failing closed on protected route: ' + pathname
+    );
     const configDecision = evaluateRouteGuard({
       pathname,
       method,

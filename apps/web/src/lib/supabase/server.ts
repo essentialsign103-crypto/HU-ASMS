@@ -9,7 +9,17 @@ export async function createServerSupabaseClient() {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY');
+    const missing = [
+      !supabaseUrl ? 'NEXT_PUBLIC_SUPABASE_URL' : null,
+      !supabaseAnonKey ? 'NEXT_PUBLIC_SUPABASE_ANON_KEY' : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    console.error(
+      `[HU-ASMS] Server Supabase client failed to initialise. Missing environment variable(s): ${missing}. ` +
+        'Configure these in Vercel project settings → Environment Variables → Production.'
+    );
+    throw new Error(`Server configuration error: missing ${missing}`);
   }
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
