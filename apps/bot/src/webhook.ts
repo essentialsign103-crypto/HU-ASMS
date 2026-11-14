@@ -1,12 +1,12 @@
-// HU-ASMS: Telegram Webhook Processor & HTTP Adapters (Phase 14)
-// Enforces X-Telegram-Bot-Api-Secret-Token verification before dispatching updates into grammY
+// HU-ASMS: Telegram Serverless Webhook Processor & Vercel Adapter (Phase 14 & Final Vercel Architecture)
+// Enforces X-Telegram-Bot-Api-Secret-Token verification, durable Supabase update deduplication, and safe serverless execution
 
-import http from 'node:http';
 import type { Bot } from 'grammy';
 import type { Update } from 'grammy/types';
 import { createBot, type CreateBotOptions } from './bot.js';
 import { handleWebhookSecretGuard } from './middleware/webhook-security.middleware.js';
 import { sanitizeLogData } from './utils/error-handler.js';
+import { getSupabaseAdminClient } from '@hu-asms/database';
 import type { BotContext } from './types/context.js';
 
 export interface WebhookHttpRequest {
@@ -20,11 +20,120 @@ export interface WebhookHttpResponse {
   body: Record<string, unknown>;
 }
 
+export interface UpdateDeduplicatorOptions {
+  maxEntries?: number;
+  ttlMs?: number;
+  supabaseClient?: any;
+}
+
+/**
+ * Serverless-safe update deduplicator.
+ * Persists update_ids durably in Supabase `public.bot_sessions` across stateless Vercel invocations,
+ * with an in-memory cache for fast sub-millisecond duplicate rejections.
+ */
+export class UpdateDeduplicator {
+  private inMemoryIds: Map<number, number>;
+  private maxEntries: number;
+  private ttlMs: number;
+  private supabaseClient?: any;
+
+  constructor(options: UpdateDeduplicatorOptions = {}) {
+    this.inMemoryIds = new Map();
+    this.maxEntries = options.maxEntries ?? 10000;
+    this.ttlMs = options.ttlMs ?? 86400000; // 24 hours
+    this.supabaseClient = options.supabaseClient;
+  }
+
+  /**
+   * Checks if update_id has already been processed or is duplicate.
+   * If not, marks it as processed durably.
+   * Returns true if DUPLICATE, false if NEW.
+   */
+  async isDuplicateAndMark(updateId: number): Promise<boolean> {
+    const now = Date.now();
+
+    // 1. In-memory check (fast-path for warm serverless lambdas)
+    if (this.inMemoryIds.has(updateId)) {
+      return true;
+    }
+
+    // 2. Durable Supabase check (serverless-safe cross-instance idempotency)
+    const client = this.supabaseClient;
+    if (client && typeof client.from === 'function') {
+      try {
+        const sessionKey = `tg_update:${updateId}`;
+        const expiresAt = new Date(now + this.ttlMs).toISOString();
+
+        // Attempt insert. If updateId already exists, primary key conflict 23505 occurs
+        const { error } = await client.from('bot_sessions').insert({
+          session_key: sessionKey,
+          session_data: { update_id: updateId, received_at: new Date(now).toISOString() },
+          expires_at: expiresAt,
+        });
+
+        if (error) {
+          // If duplicate key error (23505), update has already been accepted and processed
+          if (
+            error.code === '23505' ||
+            error.message?.includes('duplicate key') ||
+            error.message?.includes('bot_sessions_pkey')
+          ) {
+            this.inMemoryIds.set(updateId, now);
+            return true;
+          }
+          console.warn('[HU-ASMS Webhook] Durable deduplication check warning:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('[HU-ASMS Webhook] Durable deduplication exception:', err?.message || err);
+      }
+    }
+
+    // 3. Mark in-memory
+    if (this.inMemoryIds.size >= this.maxEntries) {
+      const cutoff = now - this.ttlMs;
+      for (const [id, ts] of this.inMemoryIds) {
+        if (ts < cutoff || this.inMemoryIds.size >= this.maxEntries) {
+          this.inMemoryIds.delete(id);
+        }
+      }
+    }
+
+    this.inMemoryIds.set(updateId, now);
+    return false;
+  }
+
+  clear(): void {
+    this.inMemoryIds.clear();
+  }
+
+  size(): number {
+    return this.inMemoryIds.size;
+  }
+}
+
+function resolveDurableDeduplicator(): UpdateDeduplicator {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (supabaseUrl && serviceRoleKey) {
+    try {
+      return new UpdateDeduplicator({ supabaseClient: getSupabaseAdminClient() });
+    } catch {
+      // Fallback to in-memory if DB client is not initialized
+    }
+  }
+
+  return new UpdateDeduplicator();
+}
+
+export const defaultUpdateDeduplicator = resolveDurableDeduplicator();
+
 export interface WebhookProcessorDependencies {
   bot?: Bot<BotContext>;
   botToken?: string;
   secretToken?: string;
   botOptions?: CreateBotOptions;
+  deduplicator?: UpdateDeduplicator;
 }
 
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024; // 1 MB safety limit
@@ -48,15 +157,17 @@ function getOrCreateWebhookBot(
 }
 
 /**
- * Clears the cached singleton bot instance (intended for isolated unit tests).
+ * Clears the cached singleton bot instance and update deduplicator (intended for isolated unit tests).
  */
 export function resetWebhookBotCache(): void {
   cachedBot = null;
   cachedToken = undefined;
+  defaultUpdateDeduplicator.clear();
 }
 
 /**
  * Validates method, webhook secret header, and JSON update payload before dispatching to grammY.
+ * Deduplicates update_ids to prevent replaying or duplicate actions on Telegram retries.
  */
 export async function processTelegramWebhookRequest(
   req: WebhookHttpRequest,
@@ -69,7 +180,7 @@ export async function processTelegramWebhookRequest(
     };
   }
 
-  const expectedSecret = deps.secretToken ?? process.env.TELEGRAM_WEBHOOK_SECRET;
+  const expectedSecret = 'secretToken' in deps ? deps.secretToken : process.env.TELEGRAM_WEBHOOK_SECRET;
   const guardResult = handleWebhookSecretGuard(
     { headers: req.headers },
     expectedSecret
@@ -105,6 +216,16 @@ export async function processTelegramWebhookRequest(
     };
   }
 
+  // Idempotency: Prevent duplicate execution if Telegram retries the same update_id
+  const deduplicator = deps.deduplicator || defaultUpdateDeduplicator;
+  const isDuplicate = await deduplicator.isDuplicateAndMark(parsedUpdate.update_id);
+  if (isDuplicate) {
+    return {
+      statusCode: 200,
+      body: { ok: true, duplicate: true, update_id: parsedUpdate.update_id },
+    };
+  }
+
   try {
     const bot = deps.bot || getOrCreateWebhookBot(deps.botToken, deps.botOptions);
     if (!bot.isInited()) {
@@ -128,7 +249,7 @@ export async function processTelegramWebhookRequest(
 }
 
 /**
- * Web Fetch API adapter used by Next.js App Router POST /api/bot/webhook.
+ * Web Fetch API adapter used by Next.js App Router POST /api/bot/webhook on Vercel.
  */
 export async function handleTelegramWebhookFetch(
   request: Request,
@@ -166,55 +287,4 @@ export async function handleTelegramWebhookFetch(
   );
 
   return Response.json(result.body, { status: result.statusCode });
-}
-
-/**
- * Standalone Node HTTP server for webhook mode outside Next.js (e.g. dedicated bot process).
- */
-export function createWebhookHttpServer(
-  deps: WebhookProcessorDependencies = {}
-): http.Server {
-  return http.createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    let aborted = false;
-
-    req.on('data', (chunk: Buffer) => {
-      totalBytes += chunk.length;
-      if (totalBytes > MAX_WEBHOOK_BODY_BYTES) {
-        aborted = true;
-        res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Payload too large.' }));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on('end', async () => {
-      if (aborted) return;
-      const bodyStr = Buffer.concat(chunks).toString('utf8');
-      const result = await processTelegramWebhookRequest(
-        {
-          method: req.method,
-          headers: req.headers,
-          body: bodyStr,
-        },
-        deps
-      );
-      res.writeHead(result.statusCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result.body));
-    });
-
-    req.on('error', (err) => {
-      console.error(
-        'Webhook HTTP request stream error:',
-        sanitizeLogData({ error: err?.message || 'Stream error' })
-      );
-      if (!res.headersSent) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Malformed HTTP request.' }));
-      }
-    });
-  });
 }

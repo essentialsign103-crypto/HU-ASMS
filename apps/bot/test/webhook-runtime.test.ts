@@ -1,13 +1,11 @@
 // HU-ASMS: Phase 14 Bot Rate-Limiting & Webhook Runtime Integration Tests
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { createBot } from '../src/bot.js';
 import {
   processTelegramWebhookRequest,
   handleTelegramWebhookFetch,
-  createWebhookHttpServer,
 } from '../src/webhook.js';
 
 const TEST_BOT_INFO: UserFromGetMe = {
@@ -205,35 +203,28 @@ describe('Phase 14 — Webhook Handler Security & Dispatch Flow', () => {
     assert.match(sentMessages[1].text, /Rate limit exceeded/);
   });
 
-  it('serves standalone HTTP webhook requests cleanly and rejects unauthorized callers over HTTP', async () => {
+  it('serves Vercel Fetch webhook requests cleanly and rejects unauthorized callers', async () => {
     const { bot, sentMessages } = createTestBotWithCapture(2, 10000);
-    const server = createWebhookHttpServer({ bot, secretToken: VALID_SECRET });
 
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const addr = server.address() as { port: number };
-    const baseUrl = `http://127.0.0.1:${addr.port}/api/bot/webhook`;
+    const unauthReq = new Request('http://localhost:3000/api/bot/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(makeHelpCommandUpdate(5001, 66001)),
+    });
+    const unauthRes = await handleTelegramWebhookFetch(unauthReq, { bot, secretToken: VALID_SECRET });
+    assert.equal(unauthRes.status, 403);
+    assert.equal(sentMessages.length, 0);
 
-    try {
-      const unauth = await fetch(baseUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(makeHelpCommandUpdate(5001, 66001)),
-      });
-      assert.equal(unauth.status, 403);
-      assert.equal(sentMessages.length, 0);
-
-      const auth = await fetch(baseUrl, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-telegram-bot-api-secret-token': VALID_SECRET,
-        },
-        body: JSON.stringify(makeHelpCommandUpdate(5002, 66001)),
-      });
-      assert.equal(auth.status, 200);
-      assert.equal(sentMessages.length, 1);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    const authReq = new Request('http://localhost:3000/api/bot/webhook', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-telegram-bot-api-secret-token': VALID_SECRET,
+      },
+      body: JSON.stringify(makeHelpCommandUpdate(5002, 66001)),
+    });
+    const authRes = await handleTelegramWebhookFetch(authReq, { bot, secretToken: VALID_SECRET });
+    assert.equal(authRes.status, 200);
+    assert.equal(sentMessages.length, 1);
   });
 });
