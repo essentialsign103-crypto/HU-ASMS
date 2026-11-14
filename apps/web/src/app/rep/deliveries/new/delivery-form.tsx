@@ -35,12 +35,12 @@ export function DeliveryForm({
   // Filter submissions by selected project
   const projectSubmissions = submissions.filter((s) => s.project_id === selectedProjectId);
 
-  // Set default teacher from project if not set
+  // Synchronize teacher from project whenever selected project changes
   React.useEffect(() => {
-    if (currentProject?.teacher_id && !selectedTeacherId) {
+    if (currentProject?.teacher_id) {
       setSelectedTeacherId(currentProject.teacher_id);
     }
-  }, [currentProject, selectedTeacherId]);
+  }, [selectedProjectId, currentProject?.teacher_id]);
 
   const toggleSelectAll = () => {
     if (selectedSubIds.length === projectSubmissions.length) {

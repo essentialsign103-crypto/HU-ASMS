@@ -128,20 +128,42 @@ export async function executeApproveRegistration(
       });
 
       if (rpcErr) {
+        // Enhanced error reporting with Supabase error context
+        const errorContext = {
+          code: rpcErr.code,
+          message: rpcErr.message,
+          details: rpcErr.details,
+          hint: rpcErr.hint,
+          requestId: cleanRequestId,
+          timestamp: new Date().toISOString(),
+        };
+        console.error('[STUDENT APPROVAL RPC ERROR]', JSON.stringify(errorContext, null, 2));
+
         return {
           success: false,
-          error: rpcErr.message || 'Unable to approve student registration.',
+          error: `Approval RPC failed (${rpcErr.code || 'UNKNOWN'}): ${rpcErr.message || 'Unable to approve student registration.'}`,
         };
       }
 
       const payload = Array.isArray(rpcData) ? rpcData[0] : rpcData;
       const studentId = typeof payload?.student_id === 'string' ? payload.student_id : undefined;
       if (!studentId) {
+        console.error('[STUDENT APPROVAL RPC ERROR] No student_id returned', {
+          requestId: cleanRequestId,
+          payload: payload,
+          timestamp: new Date().toISOString(),
+        });
         return {
           success: false,
           error: 'Approval RPC completed without returning the created student identifier.',
         };
       }
+
+      console.log('[STUDENT APPROVAL SUCCESS]', {
+        requestId: cleanRequestId,
+        studentId,
+        timestamp: new Date().toISOString(),
+      });
 
       return { success: true, studentId };
     }
@@ -349,11 +371,28 @@ export async function executeRejectRegistration(
       });
 
       if (rpcErr) {
+        // Enhanced error reporting with Supabase error context
+        const errorContext = {
+          code: rpcErr.code,
+          message: rpcErr.message,
+          details: rpcErr.details,
+          hint: rpcErr.hint,
+          requestId: cleanRequestId,
+          timestamp: new Date().toISOString(),
+        };
+        console.error('[STUDENT REJECTION RPC ERROR]', JSON.stringify(errorContext, null, 2));
+
         return {
           success: false,
-          error: rpcErr.message || 'Unable to reject student registration.',
+          error: `Rejection RPC failed (${rpcErr.code || 'UNKNOWN'}): ${rpcErr.message || 'Unable to reject student registration.'}`,
         };
       }
+
+      console.log('[STUDENT REJECTION SUCCESS]', {
+        requestId: cleanRequestId,
+        reason: cleanReason,
+        timestamp: new Date().toISOString(),
+      });
 
       return { success: true };
     }
@@ -463,6 +502,14 @@ export async function executeIssueStudentVerificationToken(
     });
 
     if (insertErr) {
+      console.error('[STUDENT VERIFICATION TOKEN ERROR]', {
+        code: insertErr.code,
+        message: insertErr.message,
+        details: insertErr.details,
+        studentId: student.id,
+        purpose: input.purpose,
+        timestamp: new Date().toISOString(),
+      });
       return {
         success: false,
         error: insertErr.message || 'Failed to store verification token hash.',

@@ -391,7 +391,7 @@ export class UniversityStructureService {
         },
         { onConflict: 'profile_id,section_id' }
       )
-      .select('*, profile:profiles(*), section:sections(*)')
+      .select('*, profile:profiles!representative_assignments_profile_id_fkey(*), section:sections(*)')
       .single();
 
     if (error) throw error;
@@ -428,7 +428,7 @@ export class UniversityStructureService {
   ): Promise<boolean> {
     const { data, error } = await this.client
       .from('representative_assignments')
-      .select('id, profile:profiles!inner(telegram_user_id, is_active)')
+      .select('id, profile:profiles!representative_assignments_profile_id_fkey!inner(telegram_user_id, is_active)')
       .eq('section_id', sectionId)
       .eq('is_active', true)
       .eq('profile.telegram_user_id', telegramUserId)

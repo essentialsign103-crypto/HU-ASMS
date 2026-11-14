@@ -3,8 +3,13 @@ import { InlineKeyboard } from 'grammy';
 import type { BotContext } from '../types/context.js';
 import { GroupManagementService } from '../services/group.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
+import { isPrivateTelegramChat, requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function handleMyGroups(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'group membership management'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) return;
 
@@ -76,6 +81,15 @@ export async function handleMembershipAction(
   groupId: string,
   action: 'confirmed' | 'declined'
 ): Promise<void> {
+  if (!isPrivateTelegramChat(ctx)) {
+    await ctx.answerCallbackQuery({
+      text: 'Private chat required to confirm or decline group membership.',
+      show_alert: true,
+    });
+    await requirePrivateChat(ctx, 'group membership confirmation');
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) return;
 

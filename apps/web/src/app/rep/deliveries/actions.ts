@@ -15,6 +15,7 @@ import {
   executePrepareDeliveryBatch,
   executeDispatchDelivery,
   executeAcknowledgeDelivery,
+  executeFailDelivery,
   executeGetDeliveryPackageManifest,
   type PrepareDeliveryInput,
   type DeliveryActionResult,
@@ -101,6 +102,36 @@ export async function acknowledgeDelivery(
       return { success: false, error: uuidError };
     }
     const result = await executeAcknowledgeDelivery(supabase, context, deliveryId);
+    if (result.success) {
+      revalidatePath('/rep/deliveries');
+      revalidatePath('/rep');
+    }
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Rate limit exceeded.' };
+  }
+}
+
+/**
+ * Marks a delivery as failed when manual dispatch or handover cannot be completed.
+ */
+export async function failDelivery(
+  deliveryId: string,
+  failureReason?: string
+): Promise<DeliveryActionResult> {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const context = await resolveUserSessionContext(supabase);
+    if (!context || !context.profile) {
+      await assertDistributedRateLimit('web:rep-delivery:unauth', 15, 60000, 'delivery batch operations');
+      return { success: false, error: 'Authentication required.' };
+    }
+    await assertDistributedRateLimit(`web:rep-delivery:${context.userId}`, 20, 60000, 'delivery batch operations');
+    const uuidError = validateUuidIdentifier(deliveryId, 'delivery');
+    if (uuidError) {
+      return { success: false, error: uuidError };
+    }
+    const result = await executeFailDelivery(supabase, context, deliveryId, failureReason);
     if (result.success) {
       revalidatePath('/rep/deliveries');
       revalidatePath('/rep');

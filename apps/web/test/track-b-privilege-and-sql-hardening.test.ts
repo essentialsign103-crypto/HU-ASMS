@@ -32,6 +32,7 @@ const MIGRATION_05 = path.join(migrationsDir, '20261110000005_security_hardening
 const MIGRATION_TB_1 = path.join(migrationsDir, '20261111000001_track_b_rep_active_profile_guard.sql');
 const MIGRATION_TB_2 = path.join(migrationsDir, '20261111000002_track_b_atomic_rpcs_and_db_parity.sql');
 const MIGRATION_TB_3 = path.join(migrationsDir, '20261111000003_track_b_function_privilege_and_default_acl_hardening.sql');
+const MIGRATION_PROVISION_REP = path.join(migrationsDir, '20261113000001_provision_representative_profile_rpc.sql');
 
 const UUID_OWNER = '11111111-1111-4111-8111-111111111111';
 const UUID_REP = '22222222-2222-4222-8222-222222222222';
@@ -108,6 +109,8 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
       '20261112000001_critical_blockers_persistence_and_identity_hardening.sql',
       '20261112000002_minimum_deployment_blocker_fixes.sql',
       '20261112000003_post_deployment_security_hardening.sql',
+      '20261113000001_provision_representative_profile_rpc.sql',
+      '20261113000002_enhance_provision_rep_profile_security.sql',
     ]);
 
     const postDeploySql = fs.readFileSync(
@@ -166,10 +169,11 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
     assert.doesNotMatch(m05, /20261111000003|REVOKE ALL ON FUNCTIONS FROM PUBLIC, anon/);
   });
 
-  it('enforces least-privilege EXECUTE grants across all 18 public functions (10 owner-only, 1 service-only, 1 auth-only, 6 scoped)', () => {
+  it('enforces least-privilege EXECUTE grants across all 19 public functions (10 owner-only, 1 service-only, 1 auth-only, 7 scoped)', () => {
     const m03 = fs.readFileSync(MIGRATION_TB_3, 'utf8');
     const m01 = fs.readFileSync(MIGRATION_TB_1, 'utf8');
     const m02 = fs.readFileSync(MIGRATION_TB_2, 'utf8');
+    const mProvisionRep = fs.readFileSync(MIGRATION_PROVISION_REP, 'utf8');
 
     const ownerOnlyFunctions = [
       'public\\.auth_get_assigned_section_ids\\(\\)',
@@ -199,6 +203,7 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
       'public\\.approve_student_registration\\(UUID, TEXT\\)',
       'public\\.reject_student_registration\\(UUID, TEXT\\)',
       'public\\.mark_delivery_sent_with_audit\\(UUID, TEXT\\)',
+      'public\\.provision_representative_profile\\(UUID, TEXT, TEXT, BIGINT, TEXT\\)',
     ];
 
     for (const sigPattern of ownerOnlyFunctions) {
@@ -246,7 +251,18 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
       );
     }
 
+    // Most authenticated+service functions are in m03, except provision_representative_profile which is in mProvisionRep
     for (const sigPattern of authenticatedAndServiceFunctions) {
+      // Skip provision_representative_profile for m03, check it in mProvisionRep instead
+      if (sigPattern.includes('provision_representative_profile')) {
+        assert.match(
+          mProvisionRep,
+          new RegExp(`GRANT EXECUTE ON FUNCTION ${sigPattern} TO authenticated;`, 'i'),
+          `provision_representative_profile must grant EXECUTE to authenticated in 20261113000001`
+        );
+        continue;
+      }
+      
       assert.match(
         m03,
         new RegExp(`REVOKE ALL ON FUNCTION ${sigPattern} FROM PUBLIC, anon, authenticated, service_role;`, 'i')

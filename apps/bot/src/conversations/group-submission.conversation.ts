@@ -16,6 +16,7 @@ import {
 import { validateSubmissionFile } from '@hu-asms/validation';
 import { downloadTelegramDocument, TelegramFileDownloadError } from '../utils/telegram-file.js';
 import { requirePrivateChat } from '../utils/chat-guard.js';
+import { waitForSubmissionDocument } from '../utils/submission-conversation-helpers.js';
 
 export async function groupSubmissionConversation(
   conversation: BotConversation,
@@ -234,13 +235,12 @@ export async function groupSubmissionConversation(
     promptText += `\n⚠️ *Notice:* Your group previously submitted Version ${existingSub.version}. Uploading a new file will create *Version ${existingSub.version + 1}* and supersede the earlier submission.\n`;
   }
 
-  promptText += `\n📎 *Please send your team's document now as a Telegram file attachment:*`;
+  promptText += `\n📎 *Please send your team's document now as a Telegram File / Document attachment* _(or send /cancel to abort)_:`;
 
   await ctx.reply(promptText, { parse_mode: 'Markdown' });
 
-  // 9. Wait for document upload
-  const fileMsg = await conversation.waitFor(':document');
-  const doc = fileMsg.message?.document;
+  // 9. Wait for document upload (with compressed-photo/non-document guidance)
+  const doc = await waitForSubmissionDocument(conversation, ctx);
 
   if (!doc) {
     await ctx.reply('❌ No valid document received. Please restart via /submit_group.');

@@ -168,7 +168,7 @@ export async function registrationConversation(
 
   // 3. Prompt for HU Student ID
   await ctx.reply(
-    `🎓 *Welcome to Hawassa University Assignment Submission Bot*\n\n` +
+    `🎓 *Welcome to Haramaya University Assignment Submission Bot*\n\n` +
       `To verify or register your academic identity, please enter your official *HU Student ID*:\n` +
       `*(Example: HU/10294/14 or HU-2024-001)*`,
     { parse_mode: 'Markdown' }

@@ -110,7 +110,7 @@ describe('Phase 13 — Webhook Security & Error Redaction Unit Tests', () => {
       const payload = {
         studentId: 'HU/10294/14',
         auth: {
-          bot_token: '9200252077:AAE1qA9IPfSUuHm5h91RgYtahXvgBvucrQ0',
+          bot_token: '0000000000:TEST_SYNTHETIC_BOT_TOKEN_FIXTURE_ONLY',
           apiKey: 'sb_publishable_secret_key',
         },
         meta: {

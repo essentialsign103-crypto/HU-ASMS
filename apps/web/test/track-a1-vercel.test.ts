@@ -52,4 +52,14 @@ describe('Phase 14 Track A1 — Vercel & Next.js Monorepo Configuration', () => 
     assert.match(configSource, /'@hu-asms\/validation'/);
     assert.match(configSource, /'@hu-asms\/types'/);
   });
+
+  it('should configure Node runtime, force-dynamic, and maxDuration = 60 on Telegram webhook route', () => {
+    const webhookRoutePath = path.join(webRoot, 'src/app/api/bot/webhook/route.ts');
+    assert.equal(fs.existsSync(webhookRoutePath), true, 'webhook route.ts must exist');
+
+    const routeSource = fs.readFileSync(webhookRoutePath, 'utf8');
+    assert.match(routeSource, /export const runtime = 'nodejs';/);
+    assert.match(routeSource, /export const dynamic = 'force-dynamic';/);
+    assert.match(routeSource, /export const maxDuration = 60;/);
+  });
 });

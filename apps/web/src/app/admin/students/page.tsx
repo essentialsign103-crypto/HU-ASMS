@@ -6,12 +6,12 @@ import {
   resolveTargetStudentForRequest,
   type TargetStudentSummary,
 } from '../../../lib/admin/student-approval-service';
-import { approveRegistration, rejectRegistration } from './actions';
+import { approveRegistration, rejectRegistration, retryNotificationAction } from './actions';
 import { StudentVerificationRosterConsole, type RosterStudentRow } from './token-issuer';
 import { Card } from '../../../components/ui/card';
 import { Badge } from '../../../components/ui/badge';
 import { Button } from '../../../components/ui/button';
-import { UserCheck, UserX, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { UserCheck, UserX, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { formatDateUTC } from '@hu-asms/shared';
 import { sanitizeHuStudentId } from '@hu-asms/validation';
 
@@ -23,6 +23,7 @@ export default async function StudentManagementPage() {
     { data: pendingRegistrations },
     { data: correctionRequests },
     { data: students },
+    { data: failedNotifications },
   ] = await Promise.all([
     supabase
       .from('registration_requests')
@@ -39,6 +40,13 @@ export default async function StudentManagementPage() {
       .select('*, department:departments(*), academic_year:academic_years(*), section:sections(*)')
       .order('full_name', { ascending: true })
       .limit(50),
+    supabase
+      .from('notifications')
+      .select('*')
+      .eq('recipient_type', 'student')
+      .eq('status', 'failed')
+      .order('created_at', { ascending: false })
+      .limit(10),
   ]);
 
   // Fetch bound target student records for every pending claim/account_recovery request
@@ -95,6 +103,38 @@ export default async function StudentManagementPage() {
           Review first-time Telegram bindings, verified recovery requests, single-use verification tokens, and enrolled student rosters.
         </p>
       </div>
+
+      {/* Outbound Telegram Delivery Failures Card */}
+      {failedNotifications && failedNotifications.length > 0 && (
+        <Card
+          title="Failed Outbound Telegram Student Notifications"
+          subtitle={`${failedNotifications.length} notifications failed to deliver to student accounts`}
+          headerAction={<AlertTriangle className="w-5 h-5 text-amber-500" />}
+        >
+          <div className="divide-y divide-slate-100">
+            {failedNotifications.map((notif: any) => (
+              <div key={notif.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div>
+                  <div className="font-semibold text-slate-900">
+                    Recipient Telegram ID: <code className="font-mono text-emerald-800">{notif.recipient_telegram_id}</code>
+                  </div>
+                  <div className="text-red-700 mt-0.5">Error: {notif.error_message || 'Delivery failure'}</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    Attempted: {formatDateUTC(notif.created_at)} • Retries: {notif.retry_count || 0}
+                  </div>
+                </div>
+                <form action={retryNotificationAction}>
+                  <input type="hidden" name="notificationId" value={notif.id} />
+                  <Button type="submit" variant="secondary" size="sm" className="gap-1.5 shrink-0">
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry Delivery</span>
+                  </Button>
+                </form>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Pending Registration, Claim & Recovery Requests */}
       <Card

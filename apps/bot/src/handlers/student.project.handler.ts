@@ -7,8 +7,13 @@ import {
   formatFileSize,
   resolveEffectiveTelegramMaxFileSizeBytes,
 } from '@hu-asms/shared';
+import { isPrivateTelegramChat, requirePrivateChat } from '../utils/chat-guard.js';
 
 export async function handleStudentMyProjects(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'academic project listings'))) {
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) return;
 
@@ -61,6 +66,11 @@ export async function handleProjectDetailsCallback(
   ctx: BotContext,
   projectId: string
 ): Promise<void> {
+  if (!isPrivateTelegramChat(ctx)) {
+    await requirePrivateChat(ctx, 'project details');
+    return;
+  }
+
   const supabase = getSupabaseAdminClient();
   const academicService = new AcademicManagementService(supabase);
 
@@ -99,4 +109,82 @@ export async function handleProjectDetailsCallback(
   detailMsg += `───────────────────────────`;
 
   await ctx.reply(detailMsg, { parse_mode: 'Markdown' });
+}
+
+export async function handleStudentSubmissionHistory(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'submission history'))) {
+    return;
+  }
+
+  const telegramUserId = ctx.from?.id;
+  if (!telegramUserId) return;
+
+  const supabase = getSupabaseAdminClient();
+  const db = new DatabaseService(supabase);
+  const student = await db.findStudentByTelegramId(telegramUserId);
+
+  if (!student) {
+    await ctx.reply('⚠️ Please register your official student identity first using /start.');
+    return;
+  }
+
+  const { data: memberRows, error } = await supabase
+    .from('submission_members')
+    .select(`
+      is_submitter,
+      submission:submissions(
+        id,
+        version,
+        status,
+        submission_type,
+        created_at,
+        project:projects(title, course:courses(code, title)),
+        group:groups(group_code),
+        files:submission_files(original_filename, file_size_bytes)
+      )
+    `)
+    .eq('student_id', student.id)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (error) throw error;
+
+  const entries = (memberRows || [])
+    .filter((row: any) => Boolean(row.submission))
+    .sort((a: any, b: any) =>
+      String(b.submission?.created_at || '').localeCompare(String(a.submission?.created_at || ''))
+    )
+    .slice(0, 15);
+
+  if (entries.length === 0) {
+    await ctx.reply(
+      `📜 *Submission History*\n\n` +
+        `You have not recorded any individual or group submissions yet.\n` +
+        `Use *📤 Submit Assignment* or *🚀 Submit Group Project* when ready.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  let text =
+    `📜 *Your Submission History* (Recent ${entries.length})\n` +
+    `───────────────────────────\n\n`;
+
+  entries.forEach((row: any, idx: number) => {
+    const sub = row.submission;
+    const file = Array.isArray(sub.files) ? sub.files[0] : sub.files;
+    const typeLabel =
+      sub.submission_type === 'group'
+        ? `👥 Group (${sub.group?.group_code || 'Team'})`
+        : '👤 Individual';
+    const statusIcon = sub.status === 'active' ? '✅ ACTIVE' : `🗂️ ${String(sub.status || 'archived').toUpperCase()}`;
+
+    text +=
+      `${idx + 1}. *${sub.project?.title || 'Academic Project'}* (v${sub.version})\n` +
+      `   • Type: ${typeLabel} | Status: ${statusIcon}\n` +
+      `   • File: \`${file?.original_filename || 'Document'}\` (${formatFileSize(file?.file_size_bytes || 0)})\n` +
+      `   • Date: ${formatDateUTC(sub.created_at)}\n\n`;
+  });
+
+  await ctx.reply(text, { parse_mode: 'Markdown' });
 }

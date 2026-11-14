@@ -2,9 +2,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { dispatchDelivery, acknowledgeDelivery, getDeliveryPackageManifest } from './actions';
+import { dispatchDelivery, acknowledgeDelivery, failDelivery, getDeliveryPackageManifest } from './actions';
 import { Button } from '../../../components/ui/button';
-import { Send, CheckCircle2, FileText, ExternalLink, X, Copy, Check } from 'lucide-react';
+import { Send, CheckCircle2, FileText, ExternalLink, X, Copy, Check, AlertOctagon } from 'lucide-react';
 import { formatFileSize } from '@hu-asms/shared';
 
 export function DeliveryActionsClient({ delivery }: { delivery: any }) {
@@ -32,6 +32,19 @@ export function DeliveryActionsClient({ delivery }: { delivery: any }) {
     setLoading(true);
     try {
       const res = await acknowledgeDelivery(delivery.id);
+      if (!res.success) alert(`Error: ${res.error}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFail = async () => {
+    const reason = prompt('Enter delivery failure reason (e.g. "Instructor unreachable via Telegram/email", "Invalid recipient"):');
+    if (reason === null) return;
+
+    setLoading(true);
+    try {
+      const res = await failDelivery(delivery.id, reason);
       if (!res.success) alert(`Error: ${res.error}`);
     } finally {
       setLoading(false);
@@ -114,6 +127,20 @@ export function DeliveryActionsClient({ delivery }: { delivery: any }) {
           >
             <CheckCircle2 className="w-3.5 h-3.5 text-purple-200" />
             <span>Acknowledge</span>
+          </Button>
+        )}
+
+        {(delivery.status === 'prepared' || delivery.status === 'sent') && (
+          <Button
+            type="button"
+            variant="danger"
+            size="sm"
+            className="text-xs gap-1.5"
+            onClick={handleFail}
+            isLoading={loading}
+          >
+            <AlertOctagon className="w-3.5 h-3.5" />
+            <span>Mark Failed</span>
           </Button>
         )}
       </div>

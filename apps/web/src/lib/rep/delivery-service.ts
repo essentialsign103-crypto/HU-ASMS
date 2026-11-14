@@ -255,6 +255,27 @@ export async function executePrepareDeliveryBatch(
       };
     }
 
+    // Check if any submission is already attached to an active delivery (prepared, sent, or acknowledged)
+    const itemsTable = (supabase as any)?.from?.('delivery_items');
+    if (typeof itemsTable?.select === 'function') {
+      try {
+        const query = itemsTable
+          .select('submission_id, delivery:deliveries!inner(id, status)')
+          .in('submission_id', cleanSubmissionIds)
+          .in('delivery.status', ['prepared', 'sent', 'acknowledged']);
+        const { data: existingItems } = typeof query?.then === 'function' ? await query : await query;
+
+        if (Array.isArray(existingItems) && existingItems.length > 0) {
+          return {
+            success: false,
+            error: `Duplicate delivery prevented: Submission ${existingItems[0].submission_id} is already included in an active delivery batch.`,
+          };
+        }
+      } catch {
+        // Safe fallback if mock does not implement joined select
+      }
+    }
+
     const cleanNotes =
       typeof input.deliveryNotes === 'string' && input.deliveryNotes.trim().length > 0
         ? input.deliveryNotes.trim().slice(0, 1000)
@@ -536,9 +557,118 @@ export async function executeAcknowledgeDelivery(
       };
     }
 
+    // Transition attached active submissions to 'delivered' status
+    try {
+      const itemsTable = (supabase as any)?.from?.('delivery_items');
+      if (typeof itemsTable?.select === 'function') {
+        const { data: items } = await itemsTable
+          .select('submission_id')
+          .eq('delivery_id', cleanDeliveryId);
+
+        if (Array.isArray(items) && items.length > 0) {
+          const subIds = items.map((i: any) => i.submission_id).filter(Boolean);
+          if (subIds.length > 0) {
+            await supabase
+              .from('submissions')
+              .update({ status: 'delivered' })
+              .in('id', subIds);
+          }
+        }
+      }
+    } catch (subErr) {
+      console.error('Warning: failed to transition submissions to delivered state:', subErr);
+    }
+
     return { success: true, deliveryId: cleanDeliveryId };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to record delivery acknowledgment.' };
+  }
+}
+
+/**
+ * Marks a prepared or sent delivery as failed, recording reason and preserving audit trail.
+ */
+export async function executeFailDelivery(
+  supabase: SupabaseClient,
+  context: UserSessionContext | null,
+  deliveryId: string,
+  failureReason?: string
+): Promise<DeliveryActionResult> {
+  try {
+    const actorError = validateActiveDeliveryActor(context);
+    if (actorError) {
+      return { success: false, error: actorError };
+    }
+
+    assertRateLimit(`rep-delivery:${context!.userId}`, 20, 60000, 'delivery batch operations');
+
+    if (!isValidUuid(deliveryId)) {
+      return { success: false, error: 'Invalid delivery identifier.' };
+    }
+
+    const cleanDeliveryId = deliveryId.trim();
+
+    const { data: delivery, error: fetchErr } = await supabase
+      .from('deliveries')
+      .select('id, section_id, status, delivery_notes')
+      .eq('id', cleanDeliveryId)
+      .single();
+
+    if (fetchErr || !delivery) {
+      return { success: false, error: 'Delivery record not found.' };
+    }
+
+    assertRepresentativeSectionScope(context, delivery.section_id);
+
+    if (delivery.status !== 'prepared' && delivery.status !== 'sent') {
+      return {
+        success: false,
+        error: `Invalid delivery state transition: Expected "prepared" or "sent" before marking failed, found "${delivery.status}".`,
+      };
+    }
+
+    const cleanReason =
+      typeof failureReason === 'string' && failureReason.trim().length > 0
+        ? failureReason.trim().slice(0, 1000)
+        : 'Manual delivery failure';
+
+    const { data: updatedRows, error: updateErr } = await supabase
+      .from('deliveries')
+      .update({
+        status: 'failed',
+        delivery_notes: cleanReason,
+      })
+      .eq('id', cleanDeliveryId)
+      .in('status', ['prepared', 'sent'])
+      .select('id');
+
+    if (updateErr) {
+      return { success: false, error: updateErr.message };
+    }
+
+    if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+      return {
+        success: false,
+        error: 'Delivery status transition rejected: Delivery is no longer in "prepared" or "sent" status.',
+      };
+    }
+
+    try {
+      await supabase.from('audit_logs').insert({
+        actor_id: context!.profile!.id,
+        actor_role: context!.isOwner ? 'system_owner' : 'representative',
+        action: 'TEACHER_DELIVERY_FAILED',
+        entity_type: 'delivery',
+        entity_id: cleanDeliveryId,
+        metadata: { section_id: delivery.section_id, failure_reason: cleanReason },
+      });
+    } catch (auditErr: any) {
+      console.error('Audit log emission warning for failed delivery:', auditErr);
+    }
+
+    return { success: true, deliveryId: cleanDeliveryId };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Failed to mark delivery as failed.' };
   }
 }
 

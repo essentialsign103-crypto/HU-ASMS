@@ -14,6 +14,7 @@ export {
 } from './webhook.js';
 export * from './types/context.js';
 export * from './services/registration.service.js';
+export * from './services/notification.service.js';
 
 async function bootstrap() {
   const token = process.env.TELEGRAM_BOT_TOKEN;

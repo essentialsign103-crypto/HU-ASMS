@@ -5,10 +5,19 @@ import { RepresentativeService } from '../services/representative.service.js';
 import { RepresentativeReportingService } from '../services/representative-reporting.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
 import { formatFileSize, formatDateUTC } from '@hu-asms/shared';
+import { isPrivateTelegramChat, requirePrivateChat } from '../utils/chat-guard.js';
+import { encodeReportCallback } from '../utils/callback-codec.js';
 
-export async function handleAssignedSections(ctx: BotContext): Promise<void> {
+async function requirePrivateAuthorizedRep(
+  ctx: BotContext,
+  workflowLabel: string
+) {
+  if (!(await requirePrivateChat(ctx, workflowLabel))) {
+    return null;
+  }
+
   const telegramUserId = ctx.from?.id;
-  if (!telegramUserId) return;
+  if (!telegramUserId) return null;
 
   const supabase = getSupabaseAdminClient();
   const repService = new RepresentativeService(supabase);
@@ -16,8 +25,16 @@ export async function handleAssignedSections(ctx: BotContext): Promise<void> {
 
   if (!repData || repData.assignments.length === 0) {
     await ctx.reply('⚠️ You do not have any active section assignments.');
-    return;
+    return null;
   }
+
+  return { supabase, repService, repData, telegramUserId };
+}
+
+export async function handleAssignedSections(ctx: BotContext): Promise<void> {
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'assigned academic sections');
+  if (!authorized) return;
+  const { repService, repData, telegramUserId } = authorized;
 
   let text = `🏢 *Your Assigned Academic Sections*\n───────────────────────────\n`;
   for (const assign of repData.assignments) {
@@ -36,17 +53,9 @@ export async function handleAssignedSections(ctx: BotContext): Promise<void> {
 }
 
 export async function handleViewStudents(ctx: BotContext): Promise<void> {
-  const telegramUserId = ctx.from?.id;
-  if (!telegramUserId) return;
-
-  const supabase = getSupabaseAdminClient();
-  const repService = new RepresentativeService(supabase);
-  const repData = await repService.getRepresentativeProfile(telegramUserId);
-
-  if (!repData || repData.assignments.length === 0) {
-    await ctx.reply('⚠️ You do not have any active section assignments.');
-    return;
-  }
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'section student rosters');
+  if (!authorized) return;
+  const { repService, repData, telegramUserId } = authorized;
 
   // If representative has exactly 1 section, show it directly
   if (repData.assignments.length === 1) {
@@ -80,6 +89,11 @@ export async function displaySectionRoster(
   sectionId: string,
   scopeName: string
 ): Promise<void> {
+  if (!isPrivateTelegramChat(ctx)) {
+    await requirePrivateChat(ctx, 'section student rosters');
+    return;
+  }
+
   const students = await repService.getSectionStudents(telegramUserId, sectionId);
 
   if (students.length === 0) {
@@ -100,17 +114,9 @@ export async function displaySectionRoster(
 }
 
 export async function handleViewProjects(ctx: BotContext): Promise<void> {
-  const telegramUserId = ctx.from?.id;
-  if (!telegramUserId) return;
-
-  const supabase = getSupabaseAdminClient();
-  const repService = new RepresentativeService(supabase);
-  const repData = await repService.getRepresentativeProfile(telegramUserId);
-
-  if (!repData || repData.assignments.length === 0) {
-    await ctx.reply('⚠️ You do not have any active section assignments.');
-    return;
-  }
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'section projects');
+  if (!authorized) return;
+  const { repService, repData, telegramUserId } = authorized;
 
   let text = `📂 *Academic Projects in Your Scope*\n───────────────────────────\n`;
   let projectCount = 0;
@@ -135,17 +141,9 @@ export async function handleViewProjects(ctx: BotContext): Promise<void> {
 }
 
 export async function handleSubmissionReports(ctx: BotContext): Promise<void> {
-  const telegramUserId = ctx.from?.id;
-  if (!telegramUserId) return;
-
-  const supabase = getSupabaseAdminClient();
-  const repService = new RepresentativeService(supabase);
-  const repData = await repService.getRepresentativeProfile(telegramUserId);
-
-  if (!repData || repData.assignments.length === 0) {
-    await ctx.reply('⚠️ You do not have any active section assignments.');
-    return;
-  }
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'submission reports');
+  if (!authorized) return;
+  const { repService, repData, telegramUserId } = authorized;
 
   const keyboard = new InlineKeyboard();
   let hasProjects = false;
@@ -157,7 +155,7 @@ export async function handleSubmissionReports(ctx: BotContext): Promise<void> {
       const secName = assign.section?.name || 'Section';
       keyboard.text(
         `${proj.title.substring(0, 30)}... (${secName})`,
-        `rep_report_${assign.section_id}_${proj.id}`
+        encodeReportCallback(assign.section_id, proj.id)
       ).row();
     }
   }
@@ -178,11 +176,26 @@ export async function renderProjectReport(
   sectionId: string,
   projectId: string
 ): Promise<void> {
+  if (!isPrivateTelegramChat(ctx)) {
+    await requirePrivateChat(ctx, 'submission reports');
+    return;
+  }
+
   const telegramUserId = ctx.from?.id;
   if (!telegramUserId) return;
 
   const supabase = getSupabaseAdminClient();
   const reportingService = new RepresentativeReportingService(supabase);
+
+  // Re-verify authorization on every callback invocation:
+  try {
+    await reportingService.assertSectionScope(telegramUserId, sectionId);
+  } catch (scopeErr) {
+    await ctx.reply('⛔ *Unauthorized Scope*\n\nYou are not authorized as an active representative for this academic section.', {
+      parse_mode: 'Markdown',
+    });
+    return;
+  }
 
   // 1. Fetch project to check submission type
   const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).single();
@@ -262,4 +275,150 @@ export async function renderProjectReport(
 
     await ctx.reply(text, { parse_mode: 'Markdown' });
   }
+}
+
+export async function handleRepViewGroups(ctx: BotContext): Promise<void> {
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'section group rosters');
+  if (!authorized) return;
+  const { supabase, repData } = authorized;
+
+  const assignedSectionIds = repData.assignments.map((a) => a.section_id);
+  const { data: groups, error } = await supabase
+    .from('groups')
+    .select(`
+      id,
+      group_code,
+      status,
+      project:projects(title),
+      section:sections(name, academic_year:academic_years(name)),
+      leader:students!groups_group_leader_id_fkey(full_name, hu_student_id),
+      members:group_members(confirmation_status)
+    `)
+    .in('section_id', assignedSectionIds)
+    .order('group_code', { ascending: true })
+    .limit(20);
+
+  if (error) throw error;
+
+  if (!groups || groups.length === 0) {
+    await ctx.reply(
+      `👥 *Section Groups*\n\nNo project groups have been created yet for your assigned section(s).`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  let text =
+    `👥 *Project Groups in Your Scope* (${groups.length})\n` +
+    `───────────────────────────\n\n`;
+
+  groups.forEach((grp: any, idx: number) => {
+    const members = Array.isArray(grp.members) ? grp.members : [];
+    const confirmedCount = members.filter((m: any) => m.confirmation_status === 'confirmed').length;
+    const declinedCount = members.filter((m: any) => m.confirmation_status === 'declined').length;
+    const secLabel = `${grp.section?.academic_year?.name || ''} — ${grp.section?.name || 'Section'}`;
+    const leaderLabel = grp.leader
+      ? `${grp.leader.full_name} (\`${grp.leader.hu_student_id}\`)`
+      : 'Unassigned';
+
+    text +=
+      `${idx + 1}. *${grp.group_code}* — ${grp.project?.title || 'Project'}\n` +
+      `   • Scope: ${secLabel}\n` +
+      `   • Status: \`${String(grp.status || 'pending').toUpperCase()}\` | Confirmed: ${confirmedCount}/${members.length}` +
+      (declinedCount > 0 ? ` (${declinedCount} declined)` : '') +
+      `\n   • Leader: ${leaderLabel}\n\n`;
+  });
+
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+}
+
+export async function handleRepForwardToTeacher(ctx: BotContext): Promise<void> {
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'teacher delivery forwarding');
+  if (!authorized) return;
+  const { supabase, repService, repData, telegramUserId } = authorized;
+
+  const assignedSectionIds = repData.assignments.map((a) => a.section_id);
+  let activeProjectsCount = 0;
+  for (const assign of repData.assignments) {
+    const projects = await repService.getSectionProjects(telegramUserId, assign.section_id);
+    activeProjectsCount += projects.length;
+  }
+
+  const { count: activeSubmissionsCount, error } = await supabase
+    .from('submissions')
+    .select('id', { count: 'exact', head: true })
+    .in('section_id', assignedSectionIds)
+    .eq('status', 'active');
+
+  if (error) throw error;
+
+  const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  const portalHint =
+    baseUrl && !/your-domain\.vercel\.app/i.test(baseUrl)
+      ? `${baseUrl}/rep/deliveries/new`
+      : 'Representative Web Portal → `/rep/deliveries/new`';
+
+  await ctx.reply(
+    `📦 *Forward Submissions to Teacher*\n` +
+      `───────────────────────────\n` +
+      `• *Assigned Sections:* ${assignedSectionIds.length}\n` +
+      `• *Active Projects:* ${activeProjectsCount}\n` +
+      `• *Active Submissions in Scope:* ${activeSubmissionsCount || 0}\n\n` +
+      `Manual teacher delivery batches, signed Vault download manifests, and teacher dispatch confirmation are managed in the authenticated web portal:\n` +
+      `👉 Open: ${portalHint}`,
+    { parse_mode: 'Markdown' }
+  );
+}
+
+export async function handleRepDeliveryHistory(ctx: BotContext): Promise<void> {
+  const authorized = await requirePrivateAuthorizedRep(ctx, 'delivery history');
+  if (!authorized) return;
+  const { supabase, repData } = authorized;
+
+  const assignedSectionIds = repData.assignments.map((a) => a.section_id);
+  const { data: deliveries, error } = await supabase
+    .from('deliveries')
+    .select(`
+      id,
+      batch_count,
+      status,
+      channel,
+      prepared_at,
+      sent_at,
+      acknowledged_at,
+      created_at,
+      project:projects(title),
+      course:courses(code, title),
+      teacher:teachers(full_name),
+      section:sections(name, academic_year:academic_years(name))
+    `)
+    .in('section_id', assignedSectionIds)
+    .order('created_at', { ascending: false })
+    .limit(15);
+
+  if (error) throw error;
+
+  if (!deliveries || deliveries.length === 0) {
+    await ctx.reply(
+      `📜 *Delivery History*\n\nNo teacher delivery batches have been prepared for your assigned sections yet.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  let text =
+    `📜 *Recent Teacher Deliveries* (${deliveries.length})\n` +
+    `───────────────────────────\n\n`;
+
+  deliveries.forEach((d: any, idx: number) => {
+    const secLabel = `${d.section?.academic_year?.name || ''} — ${d.section?.name || 'Section'}`;
+    text +=
+      `${idx + 1}. *${d.project?.title || 'Project'}* (${d.course?.code || 'Course'})\n` +
+      `   • Recipient: ${d.teacher?.full_name || 'Assigned Teacher'}\n` +
+      `   • Scope: ${secLabel} | Batch: ${d.batch_count} item(s)\n` +
+      `   • Channel: \`${d.channel}\` | Status: \`${String(d.status || 'pending').toUpperCase()}\`\n` +
+      `   • Updated: ${formatDateUTC(d.acknowledged_at || d.sent_at || d.prepared_at || d.created_at)}\n\n`;
+  });
+
+  await ctx.reply(text, { parse_mode: 'Markdown' });
 }

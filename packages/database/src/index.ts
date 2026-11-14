@@ -100,7 +100,7 @@ export class DatabaseService {
   async getSectionRepresentatives(sectionId: string): Promise<RepresentativeAssignment[]> {
     const { data, error } = await this.client
       .from('representative_assignments')
-      .select('*, profile:profiles(*), section:sections(*)')
+      .select('*, profile:profiles!representative_assignments_profile_id_fkey(*), section:sections(*)')
       .eq('section_id', sectionId)
       .eq('is_active', true);
 
