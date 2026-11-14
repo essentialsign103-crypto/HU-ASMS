@@ -79,8 +79,8 @@ describe('Phase 17 — Unified Bot Experience & 64-Byte Callback Data Codec', ()
 
       // Asserts ordinary student capabilities are fully preserved:
       assert.match(keyboardJson, /👤 My Profile/);
-      assert.match(keyboardJson, /📚 My Academic Information/);
-      assert.match(keyboardJson, /📋 My Projects/);
+      assert.match(keyboardJson, /📚 My Courses/);
+      assert.match(keyboardJson, /📋 My Assignments/);
       assert.match(keyboardJson, /👥 My Groups/);
       assert.match(keyboardJson, /📤 Submit Assignment/);
       assert.match(keyboardJson, /🚀 Submit Group Project/);
@@ -95,9 +95,14 @@ describe('Phase 17 — Unified Bot Experience & 64-Byte Callback Data Codec', ()
       const repPortalKb = getRepresentativeMainMenuKeyboard();
       const keyboardJson = JSON.stringify(repPortalKb);
 
-      assert.match(keyboardJson, /🏢 My Assigned Sections/);
+      assert.match(keyboardJson, /📚 My Courses/);
+      assert.match(keyboardJson, /➕ Create Course/);
+      assert.match(keyboardJson, /📝 Create Assignment/);
+      assert.match(keyboardJson, /👥 Manage Groups/);
+      assert.match(keyboardJson, /📥 Collect Submissions/);
       assert.match(keyboardJson, /📊 Submission Reports/);
       assert.match(keyboardJson, /📦 Forward to Teacher/);
+      assert.match(keyboardJson, /📜 Delivery History/);
       assert.match(keyboardJson, /🎓 Student Menu/);
     });
   });

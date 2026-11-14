@@ -1,13 +1,128 @@
-// HU-ASMS: Student Academic Project Browsing Handler (Phase 06)
+// HU-ASMS: Student Academic Project Browsing Handler (Phase 06 / Phase C core workflow)
 import { InlineKeyboard } from 'grammy';
 import type { BotContext } from '../types/context.js';
-import { getSupabaseAdminClient, DatabaseService, AcademicManagementService } from '@hu-asms/database';
+import {
+  getSupabaseAdminClient,
+  DatabaseService,
+  AcademicManagementService,
+  CourseOfferingService,
+} from '@hu-asms/database';
 import {
   formatDateUTC,
   formatFileSize,
   resolveEffectiveTelegramMaxFileSizeBytes,
 } from '@hu-asms/shared';
 import { isPrivateTelegramChat, requirePrivateChat } from '../utils/chat-guard.js';
+
+/**
+ * My Courses — shows courses (offerings) targeting the student's section,
+ * with a button to drill into each course's assignments.
+ */
+export async function handleStudentMyCourses(ctx: BotContext): Promise<void> {
+  if (!(await requirePrivateChat(ctx, 'course listings'))) return;
+
+  const telegramUserId = ctx.from?.id;
+  if (!telegramUserId) return;
+
+  const supabase = getSupabaseAdminClient();
+  const db = new DatabaseService(supabase);
+  const student = await db.findStudentByTelegramId(telegramUserId);
+
+  if (!student) {
+    await ctx.reply('⚠️ Please register your identity first using /start.');
+    return;
+  }
+
+  const cso = new CourseOfferingService(supabase);
+  const offerings = await cso.getOfferingsForSection(student.section_id);
+
+  if (offerings.length === 0) {
+    await ctx.reply(
+      `📚 *My Courses*\n\n` +
+        `No courses have been set up for *${student.academic_year?.name} — ${student.section?.name}* yet.\n\n` +
+        `Your section representative will add courses when they are available.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const keyboard = new InlineKeyboard();
+  let text =
+    `📚 *My Courses*\n` +
+    `Scope: *${student.academic_year?.name} — ${student.section?.name}*\n` +
+    `───────────────────────────\n\n`;
+
+  offerings.forEach((off, idx) => {
+    text +=
+      `${idx + 1}. *${off.course?.code} — ${off.course?.title}*\n` +
+      `   • Teacher: ${off.teacher?.full_name || 'TBA'}\n\n`;
+    keyboard
+      .text(`📂 ${off.course?.code}: Assignments`, `stu_cso_${off.id}_${student.section_id}`)
+      .row();
+  });
+
+  await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+}
+
+/**
+ * Callback handler for drilling into a specific course offering's assignments.
+ * studentSectionId is verified against the student's actual enrolled section.
+ */
+export async function handleStudentCourseAssignments(
+  ctx: BotContext,
+  offeringId: string,
+  sectionId: string
+): Promise<void> {
+  const telegramUserId = ctx.from?.id;
+  if (!telegramUserId) return;
+
+  const supabase = getSupabaseAdminClient();
+  const db = new DatabaseService(supabase);
+  const student = await db.findStudentByTelegramId(telegramUserId);
+
+  if (!student || student.section_id !== sectionId) {
+    await ctx.answerCallbackQuery({ text: '⛔ Access denied: not enrolled in this section.', show_alert: true });
+    return;
+  }
+
+  const cso = new CourseOfferingService(supabase);
+  let projects: any[] = [];
+  try {
+    projects = await cso.getProjectsForOffering(offeringId, sectionId);
+  } catch {
+    await ctx.answerCallbackQuery({ text: '⛔ Course not found.', show_alert: true });
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  if (projects.length === 0) {
+    await ctx.reply(
+      `📂 *Course Assignments*\n\nNo assignments have been posted for this course yet.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  const keyboard = new InlineKeyboard();
+  let text = `📂 *Course Assignments*\n───────────────────────────\n\n`;
+
+  projects.forEach((proj: any, idx: number) => {
+    const typeBadge = proj.submission_type === 'group' ? '👥 Group' : '👤 Individual';
+    const now = new Date();
+    const isOpen = new Date(proj.opening_date) <= now && now <= new Date(proj.deadline);
+    const statusIcon = isOpen ? '🟢 Open' : new Date(proj.deadline) < now ? '🔴 Closed' : '⏳ Upcoming';
+
+    text +=
+      `${idx + 1}. *${proj.title}*\n` +
+      `   • Type: ${typeBadge} | ${statusIcon}\n` +
+      `   • Deadline: ${formatDateUTC(proj.deadline)}\n\n`;
+
+    keyboard.text(`📖 Details: ${proj.title.substring(0, 25)}`, `view_proj_${proj.id}`).row();
+  });
+
+  await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+}
 
 export async function handleStudentMyProjects(ctx: BotContext): Promise<void> {
   if (!(await requirePrivateChat(ctx, 'academic project listings'))) {

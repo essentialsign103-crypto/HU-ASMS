@@ -148,6 +148,23 @@ export interface IdentityChangeRequest {
   updated_at: string;
 }
 
+// --- Course Section Offerings ---
+export interface CourseOffering {
+  id: string;
+  course_id: string;
+  section_id: string;
+  teacher_id: string;
+  academic_year_id: string;
+  created_by?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  course?: Course;
+  section?: Section;
+  teacher?: Teacher;
+  academic_year?: AcademicYear;
+}
+
 // --- Courses & Teachers ---
 export interface Course {
   id: string;

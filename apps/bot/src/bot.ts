@@ -16,13 +16,15 @@ import { registrationConversation } from './conversations/registration.conversat
 import { correctionConversation } from './conversations/correction.conversation.js';
 import { individualSubmissionConversation } from './conversations/submission.conversation.js';
 import { groupSubmissionConversation } from './conversations/group-submission.conversation.js';
+import { repCreateCourseConversation } from './conversations/rep-course.conversation.js';
+import { repCreateProjectConversation } from './conversations/rep-project.conversation.js';
+import { repManageGroupsConversation } from './conversations/rep-group.conversation.js';
 import { handleStartCommand } from './commands/start.js';
 import { handleProfileCommand } from './commands/profile.js';
 import { handleCorrectionCommand } from './commands/correction.js';
 import { handleHelpCommand } from './commands/help.js';
 import {
-  handleAssignedSections,
-  handleViewStudents,
+  // Existing rep handlers (still used for backward compat callbacks)
   handleViewProjects,
   handleSubmissionReports,
   handleRepViewGroups,
@@ -32,7 +34,17 @@ import {
   displaySectionRoster,
 } from './handlers/representative.handler.js';
 import {
+  // New core-workflow rep handlers
+  handleRepMyCourses,
+  handleRepCollectSubmissions,
+  handleRepMySections,
+  handleRepViewAllStudents,
+  handleCourseOfferingProjects,
+} from './handlers/rep-academic.handler.js';
+import {
   handleStudentMyProjects,
+  handleStudentMyCourses,
+  handleStudentCourseAssignments,
   handleStudentSubmissionHistory,
   handleProjectDetailsCallback,
 } from './handlers/student.project.handler.js';
@@ -141,6 +153,10 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   bot.use(createConversation(correctionConversation));
   bot.use(createConversation(individualSubmissionConversation));
   bot.use(createConversation(groupSubmissionConversation));
+  // Phase B/D: Representative academic operation conversations
+  bot.use(createConversation(repCreateCourseConversation));
+  bot.use(createConversation(repCreateProjectConversation));
+  bot.use(createConversation(repManageGroupsConversation));
 
   // 3. Command Handlers
   bot.command('start', handleStartCommand);
@@ -158,9 +174,15 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   });
   bot.command('reports', handleSubmissionReports);
 
-  // 4. Quick Action Button Listeners (Matching Custom Keyboards)
-  bot.hears(['👤 My Profile', '📚 My Academic Information'], handleProfileCommand);
+  // 4a. Student Quick Action Button Listeners
+  bot.hears('👤 My Profile', handleProfileCommand);
+  // Legacy alias kept for sessions that still have the old keyboard cached
+  bot.hears('📚 My Academic Information', handleProfileCommand);
   bot.hears('❓ Help & Support', handleHelpCommand);
+  // New core-workflow student buttons
+  bot.hears('📚 My Courses', handleStudentMyCourses);
+  bot.hears('📋 My Assignments', handleStudentMyProjects);
+  // Legacy alias for sessions that still have old keyboard
   bot.hears('📋 My Projects', handleStudentMyProjects);
   bot.hears('👥 My Groups', handleMyGroups);
   bot.hears('📜 Submission History', handleStudentSubmissionHistory);
@@ -174,14 +196,33 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     await ctx.conversation.enter('groupSubmissionConversation');
   });
 
-  // Representative Quick Action Buttons
-  bot.hears('🏢 My Assigned Sections', handleAssignedSections);
-  bot.hears('👥 View All Students', handleViewStudents);
-  bot.hears('📂 View All Projects', handleViewProjects);
+  // 4b. Representative Quick Action Buttons (new core-workflow menu)
+  // NOTE: '📚 My Courses' is shared with students — the student handler above fires for all users.
+  // Representatives entering the rep portal see the rep keyboard which also has '📚 My Courses'
+  // pointing to their course listings via the same button text; handleStudentMyCourses gracefully
+  // handles both roles since it queries the section from the authenticated student record.
+  bot.hears('➕ Create Course', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'course creation'))) return;
+    await ctx.conversation.enter('repCreateCourseConversation');
+  });
+  bot.hears('📝 Create Assignment', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'assignment creation'))) return;
+    await ctx.conversation.enter('repCreateProjectConversation');
+  });
+  bot.hears('👥 Manage Groups', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'group management'))) return;
+    await ctx.conversation.enter('repManageGroupsConversation');
+  });
+  bot.hears('📥 Collect Submissions', handleRepCollectSubmissions);
   bot.hears('📊 Submission Reports', handleSubmissionReports);
-  bot.hears('👥 View Groups', handleRepViewGroups);
   bot.hears('📦 Forward to Teacher', handleRepForwardToTeacher);
   bot.hears('📜 Delivery History', handleRepDeliveryHistory);
+  bot.hears('👥 View All Students', handleRepViewAllStudents);
+  bot.hears('🏢 My Sections', handleRepMySections);
+  // Legacy rep buttons still present in some cached keyboards
+  bot.hears('🏢 My Assigned Sections', handleRepMySections);
+  bot.hears('📂 View All Projects', handleViewProjects);
+  bot.hears('👥 View Groups', handleRepViewGroups);
   bot.hears(['🏠 Back to Main Menu', '🎓 Student Menu'], handleStartCommand);
 
   // Unified Mode Switcher: Enter Representative Operations Portal
@@ -198,8 +239,8 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     }
     await ctx.reply(
       `⭐ *Representative Operations Portal*\n\n` +
-      `You are authorized for *${repData.assignments.length}* academic section(s).\n` +
-      `Select a representative capability below:`,
+        `You are authorized for *${repData.assignments.length}* academic section(s).\n` +
+        `Select a representative capability below:`,
       {
         parse_mode: 'Markdown',
         reply_markup: getRepresentativeMainMenuKeyboard(),
@@ -207,7 +248,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     );
   });
 
-  // Student & Representative Callback Queries
+  // 4c. Callback Queries
   bot.callbackQuery(/^grp_confirm_/, async (ctx) => {
     const groupId = ctx.callbackQuery.data.replace('grp_confirm_', '');
     await handleMembershipAction(ctx, groupId, 'confirmed');
@@ -220,10 +261,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
 
   bot.callbackQuery(/^view_proj_/, async (ctx) => {
     if (!isPrivateTelegramChat(ctx)) {
-      await ctx.answerCallbackQuery({
-        text: 'Private chat required to view project details.',
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: 'Private chat required to view project details.', show_alert: true });
       await requirePrivateChat(ctx, 'project details');
       return;
     }
@@ -234,29 +272,55 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
 
   bot.callbackQuery(/^rep_roster_/, async (ctx) => {
     if (!isPrivateTelegramChat(ctx)) {
-      await ctx.answerCallbackQuery({
-        text: 'Private chat required to view section rosters.',
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: 'Private chat required to view section rosters.', show_alert: true });
       await requirePrivateChat(ctx, 'section student rosters');
       return;
     }
     const sectionId = ctx.callbackQuery.data.replace('rep_roster_', '');
     const telegramUserId = ctx.from?.id;
     if (!telegramUserId) return;
-
     await ctx.answerCallbackQuery();
     const supabase = getSupabaseAdminClient();
     const repService = new RepresentativeService(supabase);
     await displaySectionRoster(ctx, repService, telegramUserId, sectionId, 'Selected Section');
   });
 
+  // Representative course offering projects (rep My Courses drill-down)
+  bot.callbackQuery(/^cso_proj_/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    // Format: cso_proj_<offeringId(36)>_<sectionId(36)>
+    const raw = ctx.callbackQuery.data.replace('cso_proj_', '');
+    const offeringId = raw.substring(0, 36);
+    const sectionId = raw.substring(37);
+    if (!offeringId || !sectionId) {
+      await ctx.answerCallbackQuery({ text: 'Invalid request.', show_alert: true });
+      return;
+    }
+    await handleCourseOfferingProjects(ctx, offeringId, sectionId);
+  });
+
+  // Student course drill-down: stu_cso_<offeringId>_<sectionId>
+  bot.callbackQuery(/^stu_cso_/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const raw = ctx.callbackQuery.data.replace('stu_cso_', '');
+    const offeringId = raw.substring(0, 36);
+    const sectionId = raw.substring(37);
+    if (!offeringId || !sectionId) {
+      await ctx.answerCallbackQuery({ text: 'Invalid request.', show_alert: true });
+      return;
+    }
+    await handleStudentCourseAssignments(ctx, offeringId, sectionId);
+  });
+
   bot.callbackQuery(/^(rr:|rep_report_)/, async (ctx) => {
     if (!isPrivateTelegramChat(ctx)) {
-      await ctx.answerCallbackQuery({
-        text: 'Private chat required to view submission reports.',
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: 'Private chat required to view submission reports.', show_alert: true });
       await requirePrivateChat(ctx, 'submission reports');
       return;
     }

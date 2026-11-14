@@ -3,8 +3,8 @@ import { Keyboard, InlineKeyboard } from 'grammy';
 
 export function getStudentMainMenuKeyboard(): Keyboard {
   return new Keyboard()
-    .text('👤 My Profile').text('📚 My Academic Information').row()
-    .text('📋 My Projects').text('👥 My Groups').row()
+    .text('📚 My Courses').text('📋 My Assignments').row()
+    .text('👤 My Profile').text('👥 My Groups').row()
     .text('📤 Submit Assignment').text('🚀 Submit Group Project').row()
     .text('📜 Submission History').text('❓ Help & Support')
     .resized()
@@ -13,8 +13,8 @@ export function getStudentMainMenuKeyboard(): Keyboard {
 
 export function getUnifiedMainMenuKeyboard(isRepresentative = false): Keyboard {
   const kb = new Keyboard()
-    .text('👤 My Profile').text('📚 My Academic Information').row()
-    .text('📋 My Projects').text('👥 My Groups').row()
+    .text('📚 My Courses').text('📋 My Assignments').row()
+    .text('👤 My Profile').text('👥 My Groups').row()
     .text('📤 Submit Assignment').text('🚀 Submit Group Project').row()
     .text('📜 Submission History').text('❓ Help & Support');
 
@@ -27,10 +27,12 @@ export function getUnifiedMainMenuKeyboard(isRepresentative = false): Keyboard {
 
 export function getRepresentativeMainMenuKeyboard(): Keyboard {
   return new Keyboard()
-    .text('🏢 My Assigned Sections').text('👥 View All Students').row()
-    .text('📂 View All Projects').text('📊 Submission Reports').row()
-    .text('👥 View Groups').text('📦 Forward to Teacher').row()
-    .text('📜 Delivery History').text('🎓 Student Menu')
+    .text('📚 My Courses').text('➕ Create Course').row()
+    .text('📝 Create Assignment').text('👥 Manage Groups').row()
+    .text('📥 Collect Submissions').text('📊 Submission Reports').row()
+    .text('📦 Forward to Teacher').text('📜 Delivery History').row()
+    .text('👥 View All Students').text('🏢 My Sections').row()
+    .text('🎓 Student Menu')
     .resized()
     .persistent();
 }
