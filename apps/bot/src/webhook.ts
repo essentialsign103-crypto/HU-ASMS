@@ -234,10 +234,46 @@ export async function processTelegramWebhookRequest(
     await bot.handleUpdate(parsedUpdate);
     return { statusCode: 200, body: { ok: true } };
   } catch (err: any) {
+    // BotError wraps middleware/handler errors that bot.catch() already logged.
+    // In webhook mode, grammY's handleUpdate() re-throws BotError to the caller
+    // rather than routing it through the bot.catch() handler (which is only used
+    // by the polling loop). We must invoke the error handler manually and return
+    // 200 so Telegram does not retry the update.
+    const isBotError =
+      err?.constructor?.name === 'BotError' ||
+      (typeof err?.ctx !== 'undefined' && typeof err?.error !== 'undefined');
+    if (isBotError) {
+      try {
+        // Attempt to invoke the registered bot error handler (bot.catch)
+        const bot = deps.bot || (cachedBot ?? null);
+        if (bot && typeof (bot as any).errorHandler === 'function') {
+          await (bot as any).errorHandler(err);
+        }
+      } catch (handlerErr: any) {
+        // Error handler itself threw — log but still return 200 to Telegram
+        console.error(
+          '[HU-ASMS Webhook] Error handler threw:',
+          sanitizeLogData({ error: handlerErr?.message || 'Unknown', updateId: parsedUpdate.update_id })
+        );
+      }
+      console.error(
+        '[HU-ASMS Webhook] BotError in update processing (handled, returning 200):',
+        sanitizeLogData({
+          updateId: parsedUpdate.update_id,
+          error: err?.error?.message || err?.message || 'Unknown middleware error',
+        })
+      );
+      // Return 200 to prevent Telegram from retrying — the error is application-level
+      return { statusCode: 200, body: { ok: true } };
+    }
+
+    // Infrastructure error (init failure, missing token, session storage unavailable)
+    // — return 500 so Telegram retries and the error appears in Vercel logs
     console.error(
-      'Telegram webhook update processing failed:',
+      '[HU-ASMS Webhook] Infrastructure error in update processing:',
       sanitizeLogData({
         updateId: parsedUpdate.update_id,
+        errorClass: err?.constructor?.name || 'Error',
         error: err?.message || 'Unknown error',
       })
     );
