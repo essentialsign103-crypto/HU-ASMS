@@ -226,78 +226,64 @@ export async function processTelegramWebhookRequest(
     };
   }
 
+  // Separate bot setup (init) from update processing so we can return
+  // the right HTTP status to Telegram:
+  //   • Infrastructure failures (token missing, Supabase unreachable) → 500 (Telegram retries)
+  //   • Update processing errors (bad handler, session issues) → 200 (Telegram moves on)
+  let bot;
   try {
-    const bot = deps.bot || getOrCreateWebhookBot(deps.botToken, deps.botOptions);
+    bot = deps.bot || getOrCreateWebhookBot(deps.botToken, deps.botOptions);
     if (!bot.isInited()) {
-      try {
-        await bot.init();
-      } catch (initErr: any) {
-        // Clear the broken cached bot so the next request gets a fresh instance
-        cachedBot = null;
-        cachedToken = undefined;
-        throw initErr;
-      }
+      await bot.init();
     }
-    await bot.handleUpdate(parsedUpdate);
-    return { statusCode: 200, body: { ok: true } };
-  } catch (err: any) {
-    // Log the error class for Vercel runtime diagnostics before classification
+  } catch (initErr: any) {
+    // Clear the broken cached bot so the next request creates a fresh one
+    if (!deps.bot) {
+      cachedBot = null;
+      cachedToken = undefined;
+    }
     console.error(
-      '[HU-ASMS Webhook] Error caught from handleUpdate:',
+      '[HU-ASMS Webhook] Bot initialisation failed — returning 500 for Telegram retry:',
       sanitizeLogData({
         updateId: parsedUpdate.update_id,
-        errorClass: err?.constructor?.name ?? 'unknown',
-        hasCtx: 'ctx' in (err ?? {}),
-        hasError: 'error' in (err ?? {}),
-        message: err?.message ?? String(err),
-      })
-    );
-    // In webhook mode, grammY's handleUpdate() re-throws BotError to the caller
-    // rather than routing it through the bot.catch() handler (which is only used
-    // by the polling loop). We must invoke the error handler manually and return
-    // 200 so Telegram does not retry the update.
-    const isBotError =
-      err?.constructor?.name === 'BotError' ||
-      (typeof err?.ctx !== 'undefined' && typeof err?.error !== 'undefined');
-    if (isBotError) {
-      try {
-        // Attempt to invoke the registered bot error handler (bot.catch)
-        const bot = deps.bot || (cachedBot ?? null);
-        if (bot && typeof (bot as any).errorHandler === 'function') {
-          await (bot as any).errorHandler(err);
-        }
-      } catch (handlerErr: any) {
-        // Error handler itself threw — log but still return 200 to Telegram
-        console.error(
-          '[HU-ASMS Webhook] Error handler threw:',
-          sanitizeLogData({ error: handlerErr?.message || 'Unknown', updateId: parsedUpdate.update_id })
-        );
-      }
-      console.error(
-        '[HU-ASMS Webhook] BotError in update processing (handled, returning 200):',
-        sanitizeLogData({
-          updateId: parsedUpdate.update_id,
-          error: err?.error?.message || err?.message || 'Unknown middleware error',
-        })
-      );
-      // Return 200 to prevent Telegram from retrying — the error is application-level
-      return { statusCode: 200, body: { ok: true } };
-    }
-
-    // Infrastructure error (init failure, missing token, session storage unavailable)
-    // — return 500 so Telegram retries and the error appears in Vercel logs
-    console.error(
-      '[HU-ASMS Webhook] Infrastructure error in update processing:',
-      sanitizeLogData({
-        updateId: parsedUpdate.update_id,
-        errorClass: err?.constructor?.name || 'Error',
-        error: err?.message || 'Unknown error',
+        errorClass: initErr?.constructor?.name ?? 'Error',
+        error: initErr?.message ?? String(initErr),
       })
     );
     return {
       statusCode: 500,
       body: { ok: false, error: 'Failed to process Telegram update.' },
     };
+  }
+
+  // Once the bot is initialised, any error from handleUpdate is an application-level
+  // error (middleware threw, handler crashed, session write failed, etc.).
+  // Return 200 so Telegram does not keep retrying the same update.
+  try {
+    await bot.handleUpdate(parsedUpdate);
+    return { statusCode: 200, body: { ok: true } };
+  } catch (err: any) {
+    // Invoke the registered error handler (bot.catch) if reachable
+    try {
+      if (typeof (bot as any).errorHandler === 'function') {
+        await (bot as any).errorHandler(err);
+      }
+    } catch {
+      // Swallow — the original error is what matters
+    }
+    console.error(
+      '[HU-ASMS Webhook] Update processing error (returning 200 to prevent Telegram retry):',
+      sanitizeLogData({
+        updateId: parsedUpdate.update_id,
+        errorClass: err?.constructor?.name ?? 'unknown',
+        hasCtx: Boolean((err as any)?.ctx),
+        message: err?.message ?? String(err),
+        innerMessage: (err as any)?.error?.message ?? null,
+      })
+    );
+    // Always return 200 for update processing errors — Telegram has already delivered
+    // the update and retrying would cause duplicate processing
+    return { statusCode: 200, body: { ok: true } };
   }
 }
 
