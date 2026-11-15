@@ -241,7 +241,17 @@ export async function processTelegramWebhookRequest(
     await bot.handleUpdate(parsedUpdate);
     return { statusCode: 200, body: { ok: true } };
   } catch (err: any) {
-    // BotError wraps middleware/handler errors that bot.catch() already logged.
+    // Log the error class for Vercel runtime diagnostics before classification
+    console.error(
+      '[HU-ASMS Webhook] Error caught from handleUpdate:',
+      sanitizeLogData({
+        updateId: parsedUpdate.update_id,
+        errorClass: err?.constructor?.name ?? 'unknown',
+        hasCtx: 'ctx' in (err ?? {}),
+        hasError: 'error' in (err ?? {}),
+        message: err?.message ?? String(err),
+      })
+    );
     // In webhook mode, grammY's handleUpdate() re-throws BotError to the caller
     // rather than routing it through the bot.catch() handler (which is only used
     // by the polling loop). We must invoke the error handler manually and return
