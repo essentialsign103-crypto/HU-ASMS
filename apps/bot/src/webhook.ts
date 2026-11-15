@@ -229,7 +229,14 @@ export async function processTelegramWebhookRequest(
   try {
     const bot = deps.bot || getOrCreateWebhookBot(deps.botToken, deps.botOptions);
     if (!bot.isInited()) {
-      await bot.init();
+      try {
+        await bot.init();
+      } catch (initErr: any) {
+        // Clear the broken cached bot so the next request gets a fresh instance
+        cachedBot = null;
+        cachedToken = undefined;
+        throw initErr;
+      }
     }
     await bot.handleUpdate(parsedUpdate);
     return { statusCode: 200, body: { ok: true } };
