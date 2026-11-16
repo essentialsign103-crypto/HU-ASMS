@@ -111,6 +111,8 @@ describe('Phase 14 Track B — Migration Sequence & Public Function Privileges [
       '20261112000003_post_deployment_security_hardening.sql',
       '20261113000001_provision_representative_profile_rpc.sql',
       '20261113000002_enhance_provision_rep_profile_security.sql',
+      '20261114000001_course_section_offerings.sql',
+      '20261115000001_representative_announcements.sql',
     ]);
 
     const postDeploySql = fs.readFileSync(

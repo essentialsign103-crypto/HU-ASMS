@@ -31,8 +31,23 @@ export function getRepresentativeMainMenuKeyboard(): Keyboard {
     .text('📝 Create Assignment').text('👥 Manage Groups').row()
     .text('📥 Collect Submissions').text('📊 Submission Reports').row()
     .text('📦 Forward to Teacher').text('📜 Delivery History').row()
+    .text('📢 Post Announcement').text('📋 Announcement History').row()
     .text('👥 View All Students').text('🏢 My Sections').row()
     .text('🎓 Student Menu')
+    .resized()
+    .persistent();
+}
+
+export function getRepresentativeOperationsCenterKeyboard(): Keyboard {
+  return new Keyboard()
+    .text('📊 Operations Dashboard').text('🏢 My Assigned Sections').row()
+    .text('👥 My Students').text('📂 My Projects').row()
+    .text('📥 Incoming Submissions').text('📊 Academic Reports').row()
+    .text('👤 Individual Assignments').text('👥 Group Assignments').row()
+    .text('✅ Submitted Students').text('❌ Not Submitted Students').row()
+    .text('📦 Teacher Delivery').text('📜 Delivery History').row()
+    .text('🔄 Switch Active Scope').text('❓ Help and Support').row()
+    .text('🎓 Return to Student Menu')
     .resized()
     .persistent();
 }

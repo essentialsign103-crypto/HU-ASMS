@@ -18,6 +18,7 @@ export interface SessionData {
     profile: Profile;
     assignments: RepresentativeAssignment[];
   } | null;
+  activeSectionId?: string;
 }
 
 export type BotContext = Context & SessionFlavor<SessionData> & ConversationFlavor;

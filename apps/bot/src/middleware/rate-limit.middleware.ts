@@ -150,11 +150,17 @@ export function createRateLimiterMiddleware(options: Partial<RateLimitOptions> =
   if (!store) {
     if (!options.inMemoryOnly && hasSupabaseServiceCredentials()) {
       store = new SupabaseRateLimitStore(getSupabaseAdminClient());
-    } else if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        'Distributed rate-limit store is required in production. Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or pass options.store.'
-      );
     } else {
+      // Fall back to in-memory sliding window even in production.
+      // The in-memory limiter provides per-instance protection (not cross-instance)
+      // but is strictly better than throwing and blocking all bot updates.
+      if (process.env.NODE_ENV === 'production') {
+        console.warn(
+          '[HU-ASMS Bot] Distributed rate limiting unavailable. ' +
+            'Falling back to in-memory per-instance limiter. ' +
+            'Configure SUPABASE_SERVICE_ROLE_KEY for cross-instance protection.'
+        );
+      }
       localLimiter = new SlidingWindowRateLimiter(windowMs, maxRequests);
       if (typeof setInterval !== 'undefined') {
         const timer = setInterval(() => localLimiter?.prune(), 300000);

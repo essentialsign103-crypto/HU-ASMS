@@ -170,9 +170,15 @@ export async function assertDistributedRateLimit(
   }
 
   if (!client) {
+    // Fall back to in-memory rate limiting even in production.
+    // The in-memory limiter provides per-instance protection (not cross-instance)
+    // but is strictly better than throwing and blocking the entire operation.
+    // A console warning is logged so operators know the distributed store is unavailable.
     if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        `Rate limiting service unavailable for ${actionName}. Configure distributed Supabase credentials.`
+      console.warn(
+        `[HU-ASMS] Distributed rate limiting unavailable for "${actionName}". ` +
+          'Falling back to in-memory per-instance limiter. ' +
+          'Configure SUPABASE_SERVICE_ROLE_KEY for cross-instance protection.'
       );
     }
     assertRateLimit(key, safeMaxRequests, safeWindowMs, actionName);

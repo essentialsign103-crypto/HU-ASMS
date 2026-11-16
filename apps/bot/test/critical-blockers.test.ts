@@ -1178,7 +1178,7 @@ describe('Phase C — Persistent Webhook Conversations Across Cold Starts & Dist
     assert.match(errReplies[0], /temporarily busy/);
   });
 
-  it('fails closed in NODE_ENV=production if persistent Supabase credentials are missing', () => {
+  it('falls back to in-memory session storage in production if Supabase credentials are missing (Issue 1 fix)', () => {
     const prevNodeEnv = process.env.NODE_ENV;
     const prevUrl = process.env.SUPABASE_URL;
     const prevNextUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -1190,10 +1190,9 @@ describe('Phase C — Persistent Webhook Conversations Across Cold Starts & Dist
       delete process.env.NEXT_PUBLIC_SUPABASE_URL;
       delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-      assert.throws(
-        () => createBot('123456:TEST_PROD_GUARD', { botInfo: BOT_INFO }),
-        /required in production/i
-      );
+      // Should NOT throw — falls back to in-memory PersistentMemorySessionStorage
+      const bot = createBot('123456:TEST_PROD_GUARD', { botInfo: BOT_INFO });
+      assert.ok(bot, 'Bot created with in-memory fallback storage');
     } finally {
       process.env.NODE_ENV = prevNodeEnv;
       if (prevUrl !== undefined) process.env.SUPABASE_URL = prevUrl;

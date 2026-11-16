@@ -19,6 +19,7 @@ import { groupSubmissionConversation } from './conversations/group-submission.co
 import { repCreateCourseConversation } from './conversations/rep-course.conversation.js';
 import { repCreateProjectConversation } from './conversations/rep-project.conversation.js';
 import { repManageGroupsConversation } from './conversations/rep-group.conversation.js';
+import { repAnnouncementConversation } from './conversations/rep-announcement.conversation.js';
 import { handleStartCommand } from './commands/start.js';
 import { handleProfileCommand } from './commands/profile.js';
 import { handleCorrectionCommand } from './commands/correction.js';
@@ -42,6 +43,32 @@ import {
   handleCourseOfferingProjects,
 } from './handlers/rep-academic.handler.js';
 import {
+  // 15-Workflow Representative Operations Center
+  handleRepDashboard,
+  handleRepAssignedSections,
+  handleRepMyStudents,
+  handleRepMyProjects,
+  handleRepIncomingSubmissions,
+  handleRepSubmittedStudents,
+  handleRepSubmittedStudentsProject,
+  handleRepNotSubmittedStudents,
+  handleRepMissingStudentsProject,
+  handleRepIndividualAssignments,
+  handleRepGroupAssignments,
+  handleRepTeacherDelivery,
+  handleRepTeacherDeliveryProject,
+  handleRepPrepareDeliveryBatch,
+  handleRepDispatchDelivery,
+  handleRepAcknowledgeDelivery,
+  handleRepViewDeliveryManifest,
+  handleRepDeliveryHistory as handleRepDeliveryHistoryOps,
+  handleRepAcademicReports,
+  handleRepSwitchActiveScope,
+  handleRepSwitchScopeCallback,
+  handleRepHelpSupport,
+  handleRepReturnToStudentMenu,
+} from './handlers/rep-operations.handler.js';
+import {
   handleStudentMyProjects,
   handleStudentMyCourses,
   handleStudentCourseAssignments,
@@ -52,8 +79,11 @@ import {
   handleMyGroups,
   handleMembershipAction,
 } from './handlers/group.handler.js';
-import { decodeReportCallback } from './utils/callback-codec.js';
-import { getRepresentativeMainMenuKeyboard } from './keyboards/main-menu.js';
+import { decodeReportCallback, base64UrlToUuid } from './utils/callback-codec.js';
+import {
+  getRepresentativeMainMenuKeyboard,
+  getRepresentativeOperationsCenterKeyboard,
+} from './keyboards/main-menu.js';
 import { DatabaseService } from '@hu-asms/database';
 import { RepresentativeService } from './services/representative.service.js';
 import { getSupabaseAdminClient } from '@hu-asms/database';
@@ -98,8 +128,10 @@ function resolveSessionStorage(
   }
 
   if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'Persistent Supabase session storage is required in production. Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+    console.warn(
+      '[HU-ASMS Bot] Persistent Supabase session storage unavailable. ' +
+        'Falling back to in-memory sessions (conversations will not persist across cold starts). ' +
+        'Configure SUPABASE_SERVICE_ROLE_KEY for durable sessions.'
     );
   }
 
@@ -157,6 +189,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   bot.use(createConversation(repCreateCourseConversation));
   bot.use(createConversation(repCreateProjectConversation));
   bot.use(createConversation(repManageGroupsConversation));
+  bot.use(createConversation(repAnnouncementConversation));
 
   // 3. Command Handlers
   bot.command('start', handleStartCommand);
@@ -196,11 +229,24 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     await ctx.conversation.enter('groupSubmissionConversation');
   });
 
-  // 4b. Representative Quick Action Buttons (new core-workflow menu)
-  // NOTE: '📚 My Courses' is shared with students — the student handler above fires for all users.
-  // Representatives entering the rep portal see the rep keyboard which also has '📚 My Courses'
-  // pointing to their course listings via the same button text; handleStudentMyCourses gracefully
-  // handles both roles since it queries the section from the authenticated student record.
+  // 4b. Representative Operations Center (15 Core Workflows)
+  bot.hears('📊 Operations Dashboard', handleRepDashboard);
+  bot.hears('🏢 My Assigned Sections', handleRepAssignedSections);
+  bot.hears('👥 My Students', (ctx) => handleRepMyStudents(ctx, 1));
+  bot.hears('📂 My Projects', handleRepMyProjects);
+  bot.hears('📥 Incoming Submissions', handleRepIncomingSubmissions);
+  bot.hears('📊 Academic Reports', handleRepAcademicReports);
+  bot.hears('👤 Individual Assignments', handleRepIndividualAssignments);
+  bot.hears('👥 Group Assignments', handleRepGroupAssignments);
+  bot.hears('✅ Submitted Students', handleRepSubmittedStudents);
+  bot.hears('❌ Not Submitted Students', handleRepNotSubmittedStudents);
+  bot.hears('📦 Teacher Delivery', handleRepTeacherDelivery);
+  bot.hears('📜 Delivery History', handleRepDeliveryHistoryOps);
+  bot.hears('🔄 Switch Active Scope', handleRepSwitchActiveScope);
+  bot.hears('❓ Help and Support', handleRepHelpSupport);
+  bot.hears(['🎓 Return to Student Menu', '🏠 Back to Main Menu', '🎓 Student Menu'], handleRepReturnToStudentMenu);
+
+  // Backward compatibility aliases for existing keyboards
   bot.hears('➕ Create Course', async (ctx) => {
     if (!(await requirePrivateChat(ctx, 'course creation'))) return;
     await ctx.conversation.enter('repCreateCourseConversation');
@@ -213,17 +259,50 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     if (!(await requirePrivateChat(ctx, 'group management'))) return;
     await ctx.conversation.enter('repManageGroupsConversation');
   });
-  bot.hears('📥 Collect Submissions', handleRepCollectSubmissions);
-  bot.hears('📊 Submission Reports', handleSubmissionReports);
-  bot.hears('📦 Forward to Teacher', handleRepForwardToTeacher);
-  bot.hears('📜 Delivery History', handleRepDeliveryHistory);
-  bot.hears('👥 View All Students', handleRepViewAllStudents);
-  bot.hears('🏢 My Sections', handleRepMySections);
-  // Legacy rep buttons still present in some cached keyboards
-  bot.hears('🏢 My Assigned Sections', handleRepMySections);
+  bot.hears('📥 Collect Submissions', handleRepIncomingSubmissions);
+  bot.hears('📊 Submission Reports', handleRepAcademicReports);
+  bot.hears('📦 Forward to Teacher', handleRepTeacherDelivery);
+  bot.hears('📢 Post Announcement', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'announcement posting'))) return;
+    await ctx.conversation.enter('repAnnouncementConversation');
+  });
+  bot.hears('📋 Announcement History', async (ctx) => {
+    if (!(await requirePrivateChat(ctx, 'announcement history'))) return;
+    const telegramUserId = ctx.from?.id;
+    if (!telegramUserId) return;
+    const supabase = getSupabaseAdminClient();
+    const { AnnouncementService } = await import('./services/announcement.service.js');
+    const repService = new RepresentativeService(supabase);
+    const repData = await repService.getRepresentativeProfile(telegramUserId);
+    if (!repData || repData.assignments.length === 0) {
+      await ctx.reply('⚠️ You do not have any active section assignments.');
+      return;
+    }
+    const sectionId = repData.assignments[0].section_id;
+    const secName = `${repData.assignments[0].section?.academic_year?.name || ''} — ${repData.assignments[0].section?.name || ''}`;
+    try {
+      const annService = new AnnouncementService(supabase);
+      const { announcements, total } = await annService.getAnnouncementHistory(telegramUserId, sectionId, 1, 10);
+      if (announcements.length === 0) {
+        await ctx.reply(`📋 *Announcement History*\nSection: *${secName}*\n\nNo announcements yet.`, { parse_mode: 'Markdown' });
+        return;
+      }
+      let text = `📋 *Announcement History (${total})*\nSection: *${secName}*\n───────────────────────────\n\n`;
+      announcements.forEach((ann: any, idx: number) => {
+        const stats = ann.recipient_stats || {};
+        const proj = ann.project?.title ? ` | 📂 ${ann.project.title.substring(0, 20)}` : '';
+        text += `${idx + 1}. ${ann.body.substring(0, 60)}${ann.body.length > 60 ? '…' : ''}${proj}\n`;
+        text += `   ✅ ${stats.sent || 0} / ⏳ ${stats.pending || 0} / ❌ ${stats.failed || 0}${ann.pdf_filename ? ' | 📎' : ''}\n\n`;
+      });
+      await ctx.reply(text, { parse_mode: 'Markdown' });
+    } catch (err: any) {
+      await ctx.reply(`❌ Failed to load announcement history: ${err.message}`);
+    }
+  });
+  bot.hears('👥 View All Students', (ctx) => handleRepMyStudents(ctx, 1));
+  bot.hears('🏢 My Sections', handleRepAssignedSections);
   bot.hears('📂 View All Projects', handleViewProjects);
   bot.hears('👥 View Groups', handleRepViewGroups);
-  bot.hears(['🏠 Back to Main Menu', '🎓 Student Menu'], handleStartCommand);
 
   // Unified Mode Switcher: Enter Representative Operations Portal
   bot.hears('⭐ Representative Operations', async (ctx) => {
@@ -243,7 +322,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
         `Select a representative capability below:`,
       {
         parse_mode: 'Markdown',
-        reply_markup: getRepresentativeMainMenuKeyboard(),
+        reply_markup: getRepresentativeOperationsCenterKeyboard(),
       }
     );
   });
@@ -331,6 +410,145 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     }
     await ctx.answerCallbackQuery();
     await renderProjectReport(ctx, decoded.sectionId, decoded.projectId);
+  });
+
+  // 4d. Representative Operations Center Callback Handlers (Compact Base64URL routes)
+  bot.callbackQuery(/^ro_st:(\d+):([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_st:(\d+):([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const page = parseInt(match[1], 10);
+    const sectionId = base64UrlToUuid(match[2]);
+    await ctx.answerCallbackQuery();
+    await handleRepMyStudents(ctx, page, sectionId);
+  });
+
+  bot.callbackQuery(/^ro_sc:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_sc:([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const sectionId = base64UrlToUuid(match[1]);
+    await handleRepSwitchScopeCallback(ctx, sectionId);
+  });
+
+  bot.callbackQuery(/^ro_sub:(\d+):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_sub:(\d+):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const page = parseInt(match[1], 10);
+    const sectionId = base64UrlToUuid(match[2]);
+    const projectId = base64UrlToUuid(match[3]);
+    await ctx.answerCallbackQuery();
+    await handleRepSubmittedStudentsProject(ctx, sectionId, projectId, page);
+  });
+
+  bot.callbackQuery(/^ro_mis:(\d+):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_mis:(\d+):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const page = parseInt(match[1], 10);
+    const sectionId = base64UrlToUuid(match[2]);
+    const projectId = base64UrlToUuid(match[3]);
+    await ctx.answerCallbackQuery();
+    await handleRepMissingStudentsProject(ctx, sectionId, projectId, page);
+  });
+
+  bot.callbackQuery(/^ro_del:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_del:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const sectionId = base64UrlToUuid(match[1]);
+    const projectId = base64UrlToUuid(match[2]);
+    await ctx.answerCallbackQuery();
+    await handleRepTeacherDeliveryProject(ctx, sectionId, projectId);
+  });
+
+  bot.callbackQuery(/^ro_d_prep:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_d_prep:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const sectionId = base64UrlToUuid(match[1]);
+    const projectId = base64UrlToUuid(match[2]);
+    await ctx.answerCallbackQuery();
+    await handleRepPrepareDeliveryBatch(ctx, sectionId, projectId);
+  });
+
+  bot.callbackQuery(/^ro_d_sent:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_d_sent:([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const deliveryId = base64UrlToUuid(match[1]);
+    await ctx.answerCallbackQuery();
+    await handleRepDispatchDelivery(ctx, deliveryId);
+  });
+
+  bot.callbackQuery(/^ro_d_ack:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_d_ack:([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const deliveryId = base64UrlToUuid(match[1]);
+    await ctx.answerCallbackQuery();
+    await handleRepAcknowledgeDelivery(ctx, deliveryId);
+  });
+
+  bot.callbackQuery(/^ro_d_man:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    if (!isPrivateTelegramChat(ctx)) {
+      await ctx.answerCallbackQuery({ text: 'Private chat required.', show_alert: true });
+      return;
+    }
+    const match = ctx.callbackQuery.data.match(/^ro_d_man:([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const deliveryId = base64UrlToUuid(match[1]);
+    await ctx.answerCallbackQuery();
+    await handleRepViewDeliveryManifest(ctx, deliveryId);
+  });
+
+  bot.callbackQuery(/^ro_pjs:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRepMyProjects(ctx);
+  });
+
+  bot.callbackQuery(/^ro_rep:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRepAcademicReports(ctx);
+  });
+
+  bot.callbackQuery(/^ro_del_lst:([A-Za-z0-9_-]+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRepDeliveryHistoryOps(ctx);
+  });
+
+  bot.callbackQuery(/^ro_sc_menu$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRepSwitchActiveScope(ctx);
+  });
+
+  bot.callbackQuery(/^ro_noop$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
   });
 
   // 5. Global Error Boundary (redacted logging to prevent token/secret exposure)

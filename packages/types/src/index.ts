@@ -365,6 +365,36 @@ export interface Notification {
   created_at: string;
 }
 
+// --- Announcement Center ---
+export interface Announcement {
+  id: string;
+  section_id: string;
+  project_id?: string | null;
+  representative_id: string;
+  body: string;
+  pdf_storage_path?: string | null;
+  pdf_filename?: string | null;
+  pdf_file_size_bytes?: number | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  section?: Section;
+  project?: Project;
+  representative?: Profile;
+}
+
+export interface AnnouncementRecipient {
+  id: string;
+  announcement_id: string;
+  student_id: string;
+  telegram_user_id: number;
+  status: 'pending' | 'sent' | 'failed';
+  sent_at?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // --- Bot Interaction Types ---
 export interface BotSessionData {
   step?: string;

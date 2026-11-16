@@ -421,17 +421,78 @@ export class CourseOfferingService {
    * courses visible to their section.
    */
   async getOfferingsForSection(sectionId: string): Promise<CourseOfferingWithDetails[]> {
-    const { data, error } = await this.client
-      .from('course_section_offerings')
-      .select(
-        '*, course:courses(*), section:sections(*, academic_year:academic_years(*)), teacher:teachers(*), academic_year:academic_years(*)'
-      )
-      .eq('section_id', sectionId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
+    try {
+      const { data, error } = await this.client
+        .from('course_section_offerings')
+        .select(
+          '*, course:courses(*), section:sections(*, academic_year:academic_years(*)), teacher:teachers(*), academic_year:academic_years(*)'
+        )
+        .eq('section_id', sectionId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return (data || []) as CourseOfferingWithDetails[];
+      if (error) {
+        if (error.code === 'PGRST205' || (error as any).code === '42P01' || error.message?.includes('course_section_offerings')) {
+          return this.deriveOfferingsFromProjects(sectionId);
+        }
+        throw error;
+      }
+      return (data || []) as CourseOfferingWithDetails[];
+    } catch (err: any) {
+      if (err?.code === 'PGRST205' || err?.message?.includes('course_section_offerings')) {
+        return this.deriveOfferingsFromProjects(sectionId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Resilient fallback: derives course offerings from projects targeted to this section
+   * when the optional course_section_offerings table has not yet been migrated.
+   */
+  private async deriveOfferingsFromProjects(sectionId: string): Promise<CourseOfferingWithDetails[]> {
+    const { data: section } = await this.client
+      .from('sections')
+      .select('*, academic_year:academic_years(*)')
+      .eq('id', sectionId)
+      .maybeSingle();
+
+    if (!section) return [];
+
+    const { data: projects, error } = await this.client
+      .from('projects')
+      .select('id, course:courses(*), teacher:teachers(*), targets:project_targets!inner(*)')
+      .eq('is_active', true)
+      .or(`academic_year_id.eq.${section.academic_year_id}`, { foreignTable: 'targets' })
+      .or(`section_id.is.null,section_id.eq.${sectionId}`, { foreignTable: 'targets' });
+
+    if (error || !projects) return [];
+
+    const seen = new Set<string>();
+    const offerings: CourseOfferingWithDetails[] = [];
+
+    for (const p of projects) {
+      const course = (Array.isArray(p.course) ? p.course[0] : p.course) as any;
+      const teacher = (Array.isArray(p.teacher) ? p.teacher[0] : p.teacher) as any;
+      if (!course || seen.has(course.id)) continue;
+      seen.add(course.id);
+      offerings.push({
+        id: `virtual_${p.id}`,
+        course_id: course.id,
+        section_id: sectionId,
+        teacher_id: teacher?.id || '',
+        academic_year_id: section.academic_year_id,
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        course: course,
+        section: section as any,
+        teacher: teacher,
+        academic_year: (section as any).academic_year,
+      });
+    }
+
+    return offerings;
   }
 
   /**
@@ -441,6 +502,45 @@ export class CourseOfferingService {
     offeringId: string,
     sectionId?: string
   ): Promise<CourseOfferingWithDetails | null> {
+    if (offeringId.startsWith('virtual_')) {
+      const projId = offeringId.slice(8);
+      const { data: p } = await this.client
+        .from('projects')
+        .select('id, course:courses(*), teacher:teachers(*), targets:project_targets(*)')
+        .eq('id', projId)
+        .maybeSingle();
+
+      const course = (Array.isArray(p?.course) ? p?.course[0] : p?.course) as any;
+      const teacher = (Array.isArray(p?.teacher) ? p?.teacher[0] : p?.teacher) as any;
+
+      if (!p || !course) return null;
+
+      if (sectionId) {
+        const { data: sec } = await this.client
+          .from('sections')
+          .select('*, academic_year:academic_years(*)')
+          .eq('id', sectionId)
+          .maybeSingle();
+
+        if (sec) {
+          return {
+            id: offeringId,
+            course_id: course.id,
+            section_id: sectionId,
+            teacher_id: teacher?.id || '',
+            academic_year_id: sec.academic_year_id,
+            is_active: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            course: course,
+            section: sec as any,
+            teacher: teacher,
+            academic_year: (sec as any).academic_year,
+          };
+        }
+      }
+    }
+
     let query = this.client
       .from('course_section_offerings')
       .select(
@@ -452,9 +552,21 @@ export class CourseOfferingService {
       query = query.eq('section_id', sectionId);
     }
 
-    const { data, error } = await query.maybeSingle();
-    if (error) throw error;
-    return data as CourseOfferingWithDetails | null;
+    try {
+      const { data, error } = await query.maybeSingle();
+      if (error) {
+        if (error.code === 'PGRST205' || (error as any).code === '42P01') {
+          return null;
+        }
+        throw error;
+      }
+      return data as CourseOfferingWithDetails | null;
+    } catch (err: any) {
+      if (err?.code === 'PGRST205' || err?.message?.includes('course_section_offerings')) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   /**
