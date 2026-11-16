@@ -168,8 +168,21 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
     })
   );
 
-  // 2. Conversation Plugin & Global Escape Hatch (/cancel must precede createConversation)
+  // 2. Conversation Plugin
+  //    Global escape hatch commands (/start, /cancel) MUST be registered before
+  //    createConversation() so grammY does not replay the active conversation
+  //    when the user issues one of these commands.
   bot.use(conversations());
+
+  // /start: always exits any active conversation and re-runs the welcome flow.
+  // Registering here (before createConversation) ensures the command intercepts
+  // mid-conversation state instead of being replayed inside it.
+  bot.command('start', async (ctx) => {
+    await ctx.conversation.exit();
+    return handleStartCommand(ctx);
+  });
+
+  // /cancel: explicit escape hatch for any in-progress multi-step operation.
   bot.command('cancel', async (ctx) => {
     const active = await ctx.conversation.active();
     const hasActive = Object.keys(active).length > 0;
@@ -181,6 +194,7 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
       { parse_mode: 'Markdown' }
     );
   });
+
   bot.use(createConversation(registrationConversation));
   bot.use(createConversation(correctionConversation));
   bot.use(createConversation(individualSubmissionConversation));
@@ -192,7 +206,6 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   bot.use(createConversation(repAnnouncementConversation));
 
   // 3. Command Handlers
-  bot.command('start', handleStartCommand);
   bot.command('profile', handleProfileCommand);
   bot.command('correction', handleCorrectionCommand);
   bot.command('help', handleHelpCommand);
