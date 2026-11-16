@@ -220,11 +220,27 @@ export async function processTelegramWebhookRequest(
   const deduplicator = deps.deduplicator || defaultUpdateDeduplicator;
   const isDuplicate = await deduplicator.isDuplicateAndMark(parsedUpdate.update_id);
   if (isDuplicate) {
+    console.log('[HU-ASMS Webhook] Duplicate update — skipping', { updateId: parsedUpdate.update_id });
     return {
       statusCode: 200,
       body: { ok: true, duplicate: true, update_id: parsedUpdate.update_id },
     };
   }
+
+  // Determine update type for logging (never logs message text or user PII)
+  const updateType = parsedUpdate.message
+    ? (parsedUpdate.message.text?.startsWith('/') ? `command:${parsedUpdate.message.text.split(' ')[0].split('@')[0]}` : 'message')
+    : parsedUpdate.callback_query
+    ? 'callback_query'
+    : parsedUpdate.chat_member
+    ? 'chat_member'
+    : 'unknown';
+
+  console.log('[HU-ASMS Webhook] Processing update', {
+    updateId: parsedUpdate.update_id,
+    updateType,
+    chatType: parsedUpdate.message?.chat?.type ?? parsedUpdate.callback_query?.message?.chat?.type ?? 'unknown',
+  });
 
   // Separate bot setup (init) from update processing so we can return
   // the right HTTP status to Telegram:
@@ -234,8 +250,10 @@ export async function processTelegramWebhookRequest(
   try {
     bot = deps.bot || getOrCreateWebhookBot(deps.botToken, deps.botOptions);
     if (!bot.isInited()) {
+      console.log('[HU-ASMS Webhook] Calling bot.init()', { updateId: parsedUpdate.update_id });
       await bot.init();
     }
+    console.log('[HU-ASMS Webhook] Bot ready', { updateId: parsedUpdate.update_id, isInited: bot.isInited() });
   } catch (initErr: any) {
     // Clear the broken cached bot so the next request creates a fresh one
     if (!deps.bot) {
@@ -260,7 +278,9 @@ export async function processTelegramWebhookRequest(
   // error (middleware threw, handler crashed, session write failed, etc.).
   // Return 200 so Telegram does not keep retrying the same update.
   try {
+    console.log('[HU-ASMS Webhook] Calling bot.handleUpdate', { updateId: parsedUpdate.update_id });
     await bot.handleUpdate(parsedUpdate);
+    console.log('[HU-ASMS Webhook] bot.handleUpdate completed', { updateId: parsedUpdate.update_id });
     return { statusCode: 200, body: { ok: true } };
   } catch (err: any) {
     // Invoke the registered error handler (bot.catch) if reachable

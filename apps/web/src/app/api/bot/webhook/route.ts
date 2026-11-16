@@ -31,7 +31,19 @@ const STATIC_BOT_INFO: UserFromGetMe = {
 };
 
 export async function POST(request: Request): Promise<Response> {
-  return handleTelegramWebhookFetch(request, {
+  // Structured intake log — visible in Vercel Function logs.
+  // Never logs the secret header value or any PII.
+  const hasSecret = request.headers.has('x-telegram-bot-api-secret-token');
+  console.log('[webhook] POST received', {
+    hasSecretHeader: hasSecret,
+    contentType: request.headers.get('content-type'),
+    contentLength: request.headers.get('content-length'),
+  });
+
+  const response = await handleTelegramWebhookFetch(request, {
     botOptions: { botInfo: STATIC_BOT_INFO },
   });
+
+  console.log('[webhook] POST response', { status: response.status });
+  return response;
 }

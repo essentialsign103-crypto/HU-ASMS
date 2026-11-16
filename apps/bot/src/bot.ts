@@ -178,7 +178,15 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
   // Registering here (before createConversation) ensures the command intercepts
   // mid-conversation state instead of being replayed inside it.
   bot.command('start', async (ctx) => {
+    const updateId = ctx.update?.update_id;
+    console.log('[bot] /start intercepted pre-conversation', { updateId });
+    const activeBefore = await ctx.conversation.active();
+    const hadActive = Object.keys(activeBefore).length > 0;
+    if (hadActive) {
+      console.log('[bot] /start clearing active conversation', { updateId, conversations: Object.keys(activeBefore) });
+    }
     await ctx.conversation.exit();
+    console.log('[bot] /start delegating to handleStartCommand', { updateId, hadActive });
     return handleStartCommand(ctx);
   });
 
@@ -572,8 +580,12 @@ export function createBot(token?: string, options?: CreateBotOptions): Bot<BotCo
       updateId: ctx?.update?.update_id,
       message: rawError?.message || String(rawError),
       code: rawError?.code,
+      errorClass: rawError?.constructor?.name ?? 'Error',
+      // Include Telegram API error details if present
+      telegramErrorCode: rawError?.error_code,
+      telegramDescription: rawError?.description,
     });
-    console.error('Error while handling Telegram update:', safeError);
+    console.error('[bot] Unhandled error in update handler:', safeError);
   });
 
   return bot;
